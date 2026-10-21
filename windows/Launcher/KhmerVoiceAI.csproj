@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The Windows launcher. .NET Framework 4.8 is built into Windows 10 and 11, so nothing extra to install. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <AssemblyName>Khmer Voice AI</AssemblyName>
+    <RootNamespace>KhmerVoiceAI</RootNamespace>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <Product>Khmer Voice AI</Product>
+    <Description>Give any video a Khmer voice</Description>
+    <Version Condition="'$(Version)' == ''">1.0.0</Version>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System.Net.Http" />
+  </ItemGroup>
+</Project>

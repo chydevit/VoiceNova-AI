@@ -114,7 +114,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// KVA_SMOKE_TEST=1 (for CI): set up, start the server, check it answers, write smoke.json, quit.
+    private var smoke: Bool { env["KVA_SMOKE_TEST"] == "1" }
+    private var bundled: URL { Bundle.main.resourceURL! }
+
     private func show(_ message: String, busy: Bool) {
+        if smoke && !busy {
+            FileHandle.standardError.write(Data("SMOKE FAILED: \(message)\n".utf8))
+            exit(1)
+        }
         status.stringValue = message
         status.textColor = busy ? .secondaryLabelColor : .systemRed
         spinner.isHidden = !busy
@@ -163,6 +171,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin")
         if let keys = info["KVAKeysFile"] as? String, !keys.isEmpty, env["KEYS_FILE"] == nil {
             env["KEYS_FILE"] = keys
+        }
+        let ffmpeg = bundled.appendingPathComponent("ffmpeg/ffmpeg")
+        if FileManager.default.isExecutableFile(atPath: ffmpeg.path) { // a release may carry FFmpeg
+            env["FFMPEG_PATH"] = ffmpeg.path
+            env["FFPROBE_PATH"] = bundled.appendingPathComponent("ffmpeg/ffprobe").path
         }
         if projectBackend == nil { // bundled: everything the user makes lives in Application Support
             env["DATA_DIR"] = support.appendingPathComponent("data").path
@@ -227,7 +240,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         return nil
     }
 
+    private func finishSmokeTest() {
+        let health = (try? Data(contentsOf: base.appendingPathComponent("api/health"))) ?? Data()
+        let page = (try? String(contentsOf: base, encoding: .utf8)) ?? ""
+        try? health.write(to: support.appendingPathComponent("smoke.json"))
+        let text = String(decoding: health, as: UTF8.self)
+        let ok = text.contains("\"ffmpeg\":true") && page.contains("<div id=\"root\">")
+        print("SMOKE health: \(text)")
+        print("SMOKE \(ok ? "passed" : "FAILED")")
+        quitConfirmed = true
+        server?.terminate()
+        exit(ok ? 0 : 2)
+    }
+
     private func setUpEnvironment() {
+        let uv = bundled.appendingPathComponent("uv")
+        if FileManager.default.isExecutableFile(atPath: uv.path) { return setUpWithUV(uv) }
         guard let system = findPython() else {
             show("Khmer Voice AI needs Python 3.10 or newer.\n\nInstall it from python.org/downloads (or run: brew install python), then open Khmer Voice AI again.", busy: false)
             return
@@ -251,6 +279,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         }
     }
 
+    /// Release builds carry uv, which downloads its own Python: nothing has to be installed first.
+    private func setUpWithUV(_ uv: URL) {
+        let venv = support.appendingPathComponent("venv")
+        try? FileManager.default.removeItem(at: venv)
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        let steps: [(String, URL, [String])] = [
+            ("Preparing Python…", uv, ["venv", venv.path, "--python", "3.12"]),
+            ("Installing Khmer Voice AI's components…", uv, ["pip", "install", "--python", python.path, "-r", requirements.path]),
+        ]
+        uvEnvironment = [
+            "UV_PYTHON_INSTALL_DIR": support.appendingPathComponent("python").path,
+            "UV_PYTHON_PREFERENCE": "only-managed", // our own Python, whatever else is installed
+        ]
+        run(steps[...]) { ok in
+            if ok {
+                try? FileManager.default.copyItem(at: self.requirements, to: self.marker)
+                self.justSetUp = true
+                self.launchServer()
+            } else {
+                self.show("Setting up didn't finish.\nCheck your internet connection, then open Khmer Voice AI again.\n\nDetails: Help → Show Server Log.", busy: false)
+            }
+        }
+    }
+
+    private var uvEnvironment: [String: String] = [:]
+
     /// Run setup steps one after another, showing what's happening (the last line each step prints).
     private func run(_ steps: ArraySlice<(String, URL, [String])>, done: @escaping (Bool) -> Void) {
         guard let (title, executable, arguments) = steps.first else { return done(true) }
@@ -261,6 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         process.arguments = arguments
         var env = self.env
         env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+        env.merge(uvEnvironment) { _, new in new }
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         process.environment = env
         let pipe = Pipe()
@@ -290,7 +345,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     private func waitForServer(deadline: Date) {
         isOurServer(base.appendingPathComponent("api/health")) { ok in
-            if ok {
+            if ok && self.smoke {
+                self.finishSmokeTest()
+            } else if ok {
                 self.status.stringValue = "Opening…"
                 self.webView.load(URLRequest(url: self.base))
             } else if Date() > deadline {

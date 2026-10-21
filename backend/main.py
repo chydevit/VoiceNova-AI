@@ -37,12 +37,29 @@ def _cleanup_loop():
             log.exception("cleanup failed")
 
 
+def _parent_alive(parent: int) -> bool:
+    if os.name != "nt":
+        return os.getppid() == parent  # on macOS/Linux an orphan gets a new parent
+    import ctypes  # Windows never changes the parent id: ask whether that process still runs
+
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(0x00100000, False, parent)  # SYNCHRONIZE
+    if not handle:
+        return False
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) == 0x102  # WAIT_TIMEOUT: still running
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _exit_with_parent(parent: int):
-    """Started by the Mac app: if the app goes away without stopping us (crash, force quit), stop too."""
+    """Started by the desktop app: if the app goes away without stopping us (crash, force quit), stop too."""
     while True:
         time.sleep(2)
-        if os.getppid() != parent:
+        if not _parent_alive(parent):
             log.info("the app that started this server has closed; stopping")
+            if os.name == "nt":
+                os._exit(0)
             os.kill(os.getpid(), signal.SIGTERM)  # a clean shutdown, like Ctrl+C
             return
 
@@ -56,7 +73,8 @@ async def lifespan(_app: FastAPI):
         log.info("removed %d expired project(s)", removed)
     threading.Thread(target=_cleanup_loop, daemon=True).start()
     if config.env("EXIT_WITH_PARENT") == "1":
-        threading.Thread(target=_exit_with_parent, args=(os.getppid(),), daemon=True).start()
+        parent = int(config.env("PARENT_PID") or os.getppid())  # the Windows app passes its own id
+        threading.Thread(target=_exit_with_parent, args=(parent,), daemon=True).start()
     yield
 
 

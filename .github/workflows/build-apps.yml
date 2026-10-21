@@ -1,0 +1,134 @@
+# Builds the downloadable apps on GitHub's own Mac and Windows machines, tests each one as a fresh
+# install (it sets itself up from nothing and its server must answer), and — for a version tag
+# like v1.1.0 — attaches them to that GitHub release.
+name: Build apps
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [build-apps]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        shell: bash
+        run: echo "VERSION=$([[ "$GITHUB_REF_TYPE" == tag ]] && echo "${GITHUB_REF_NAME#v}" || echo 1.1.0-dev)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - name: Build the web app
+        working-directory: frontend
+        run: npm ci && npm run build
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Make the icon
+        run: |
+          pip install pillow
+          python desktop/make_icon.py icon.png
+          python -c "from PIL import Image; Image.open('icon.png').save('windows/Launcher/app.ico', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
+      - name: Build the launcher
+        run: dotnet build windows/Launcher/KhmerVoiceAI.csproj -c Release "-p:Version=${{ env.VERSION }}" -o build/launcher
+      - name: Put the app folder together
+        shell: pwsh
+        run: |
+          $app = "build/Khmer Voice AI"
+          New-Item -ItemType Directory -Force "$app/app/frontend", "$app/app/ffmpeg" | Out-Null
+          Get-ChildItem build/launcher -File | Where-Object Extension -ne ".pdb" | Copy-Item -Destination $app
+          robocopy backend "$app/app/backend" /E /XD .venv data __pycache__ separate_work /XF .env *.pyc /NFL /NDL /NJH /NJS
+          if ($LASTEXITCODE -ge 8) { exit 1 }
+          Copy-Item -Recurse frontend/dist "$app/app/frontend/dist"
+          Copy-Item THIRD_PARTY_NOTICES.txt $app
+
+          Invoke-WebRequest https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip -OutFile uv.zip
+          Expand-Archive uv.zip -DestinationPath uvtmp
+          Get-ChildItem uvtmp -Recurse -Filter uv.exe | Select-Object -First 1 | Copy-Item -Destination "$app/app/uv.exe"
+
+          Invoke-WebRequest https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath fftmp
+          Get-ChildItem fftmp -Recurse -Include ffmpeg.exe, ffprobe.exe | Copy-Item -Destination "$app/app/ffmpeg"
+          $encoders = & "$app/app/ffmpeg/ffmpeg.exe" -hide_banner -encoders | Out-String
+          foreach ($need in "libx264", "libmp3lame", " aac ") { if (-not $encoders.Contains($need)) { throw "FFmpeg lacks $need" } }
+          Get-ChildItem $app -Recurse | Measure-Object Length -Sum | ForEach-Object { "App folder: {0:N0} MB" -f ($_.Sum / 1MB) }
+          exit 0
+      - name: Self-test as a fresh install
+        shell: pwsh
+        run: |
+          $env:KVA_SUPPORT_DIR = "$env:RUNNER_TEMP\kva"
+          $env:KVA_PORT = "8123"
+          $p = Start-Process -FilePath "build/Khmer Voice AI/Khmer Voice AI.exe" -ArgumentList "--smoke-test" -PassThru -Wait
+          Get-Content "$env:KVA_SUPPORT_DIR\logs\server.log" -Tail 60
+          if ($p.ExitCode -ne 0) { throw "The self-test failed (exit code $($p.ExitCode))." }
+      - name: Installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc "/DAppVersion=$env:VERSION" "/DSourceDir=$PWD\build\Khmer Voice AI" windows\installer.iss
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Compress-Archive -Path "build/Khmer Voice AI" -DestinationPath "build/Khmer-Voice-AI-$env:VERSION-windows-x64-portable.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            windows/Output/*.exe
+            build/*.zip
+
+  mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version
+        run: echo "VERSION=$([[ "$GITHUB_REF_TYPE" == tag ]] && echo "${GITHUB_REF_NAME#v}" || echo 1.1.0-dev)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - name: Install the web app's tools
+        working-directory: frontend
+        run: npm ci
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: FFmpeg to bundle (when its builds are available)
+        run: |
+          mkdir ffbin && cd ffbin
+          base=https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release
+          if curl -fsSL -o ffmpeg.zip "$base/ffmpeg.zip" && curl -fsSL -o ffprobe.zip "$base/ffprobe.zip" \
+             && unzip -oq ffmpeg.zip && unzip -oq ffprobe.zip && ./ffmpeg -hide_banner -encoders | grep -q libx264; then
+            echo "FFMPEG_DIR=$PWD" >> "$GITHUB_ENV"
+          else
+            echo "::warning::FFmpeg builds for macOS weren't available; the Mac app will use the computer's own FFmpeg (brew install ffmpeg)."
+            brew install ffmpeg  # only so the self-test below has one
+          fi
+      - name: Build the Mac app
+        run: |
+          pip install pillow
+          ./desktop/build_mac_app.sh --release
+      - name: Self-test as a fresh install
+        run: |
+          export KVA_SMOKE_TEST=1 KVA_SUPPORT_DIR="$RUNNER_TEMP/kva" KVA_PORT=8124
+          "desktop/build/Khmer Voice AI.app/Contents/MacOS/KhmerVoiceAI"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac
+          path: desktop/build/*.zip
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [windows, mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: dist, merge-multiple: true }
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          find dist -type f
+          files=$(find dist -type f \( -name '*.exe' -o -name '*.zip' \))
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "Khmer Voice AI ${GITHUB_REF_NAME#v}" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" $files --repo "$GITHUB_REPOSITORY" --clobber

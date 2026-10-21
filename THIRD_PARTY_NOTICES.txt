@@ -1,0 +1,23 @@
+Khmer Voice AI bundles or downloads these third-party programs. Each keeps its own license.
+
+uv — https://github.com/astral-sh/uv
+  Bundled in the app; installs Python and the Python packages on first launch.
+  License: MIT or Apache-2.0.
+
+Python — https://www.python.org
+  Downloaded by uv on first launch (python-build-standalone builds).
+  License: Python Software Foundation License.
+
+FFmpeg — https://ffmpeg.org
+  Bundled in the Windows app (builds by BtbN: https://github.com/BtbN/FFmpeg-Builds),
+  and in the Mac app when available (builds by Martin Riedl: https://ffmpeg.martin-riedl.de).
+  These builds are licensed under the GNU General Public License v3 (GPL-3.0).
+  FFmpeg's source code: https://ffmpeg.org/download.html#get-sources
+  The build recipes and sources of these builds are linked on the pages above.
+
+Python packages (installed on first launch from PyPI, listed in backend/requirements.txt):
+  FastAPI, Uvicorn, faster-whisper (and CTranslate2, PyAV, ONNX Runtime), NumPy, edge-tts,
+  httpx, python-dotenv, anthropic and their dependencies — each under its own license
+  (MIT, BSD, Apache-2.0 or similar).
+
+Whisper speech models (downloaded on first use from Hugging Face): MIT License.

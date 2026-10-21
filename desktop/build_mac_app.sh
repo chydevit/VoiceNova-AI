@@ -59,6 +59,20 @@ if [ "$MODE" = "--release" ]; then
     "$ROOT/backend/" "$APP/Contents/Resources/backend/"
   mkdir -p "$APP/Contents/Resources/frontend"
   cp -R "$ROOT/frontend/dist" "$APP/Contents/Resources/frontend/dist"
+  cp "$ROOT/THIRD_PARTY_NOTICES.txt" "$APP/Contents/Resources/"
+  # uv: installs Python and the packages on first launch, so users need nothing installed first.
+  if [ -z "${UV_BIN:-}" ]; then
+    UV_TMP="$(mktemp -d)"
+    curl -fsSL "https://github.com/astral-sh/uv/releases/latest/download/uv-$(uname -m | sed 's/arm64/aarch64/')-apple-darwin.tar.gz" | tar -xz -C "$UV_TMP"
+    UV_BIN="$(find "$UV_TMP" -type f -name uv | head -1)"
+  fi
+  install -m 755 "$UV_BIN" "$APP/Contents/Resources/uv"
+  # FFmpeg (optional): FFMPEG_DIR=<folder with ffmpeg and ffprobe>. Without it the app uses the Mac's own (brew install ffmpeg).
+  if [ -n "${FFMPEG_DIR:-}" ] && [ -x "$FFMPEG_DIR/ffmpeg" ] && [ -x "$FFMPEG_DIR/ffprobe" ]; then
+    mkdir -p "$APP/Contents/Resources/ffmpeg"
+    install -m 755 "$FFMPEG_DIR/ffmpeg" "$FFMPEG_DIR/ffprobe" "$APP/Contents/Resources/ffmpeg/"
+    echo "  (FFmpeg bundled)"
+  fi
   BACKEND_PATH=""   # bundled: the app finds everything inside itself
   KEYS_PATH=""
 else
