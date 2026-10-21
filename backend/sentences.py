@@ -240,14 +240,75 @@ def remove(project: dict, sid: str, fill: str) -> None:
     i, s = find(project, sid)
     del project["sentences"][i]
     if fill == "original":
-        gaps = sorted([*project["original_gaps"], {"start": s["start"], "end": s["end"]}], key=lambda g: g["start"])
-        merged: list[dict] = []
-        for g in gaps:
-            if merged and g["start"] <= merged[-1]["end"] + 0.01:
-                merged[-1]["end"] = max(merged[-1]["end"], g["end"])
-            else:
-                merged.append(dict(g))
-        project["original_gaps"] = merged
+        project["original_gaps"] = merge_ranges([*project["original_gaps"], {"start": s["start"], "end": s["end"]}])
+
+
+def merge_ranges(ranges: list[dict]) -> list[dict]:
+    """Sort {"start", "end"} ranges and join the ones that overlap or touch."""
+    merged: list[dict] = []
+    for r in sorted(ranges, key=lambda r: r["start"]):
+        if merged and r["start"] <= merged[-1]["end"] + 0.01:
+            merged[-1]["end"] = max(merged[-1]["end"], r["end"])
+        else:
+            merged.append(dict(r))
+    return merged
+
+
+def layer_ranges(ranges: list[dict]) -> list[dict]:
+    """Background volume parts {start, end, gain, fade}, in the order they were made: a later part
+    wins where it overlaps an earlier one (which keeps its pieces on either side). Parts at normal
+    volume (gain 1) only punch holes and are then dropped; touching parts that match are joined."""
+    layered: list[dict] = []
+    for r in ranges:
+        kept = []
+        for p in layered:
+            if p["end"] <= r["start"] or p["start"] >= r["end"]:
+                kept.append(p)
+                continue
+            if p["start"] < r["start"]:
+                kept.append({**p, "end": r["start"]})
+            if p["end"] > r["end"]:
+                kept.append({**p, "start": r["end"]})
+        layered = kept + [dict(r)]
+    out: list[dict] = []
+    for p in sorted((p for p in layered if p["end"] - p["start"] >= 0.05 and p["gain"] != 1), key=lambda p: p["start"]):
+        last = out[-1] if out else None
+        if last and abs(last["end"] - p["start"]) < 0.01 and last["gain"] == p["gain"] and last.get("fade") == p.get("fade"):
+            last["end"] = p["end"]
+        else:
+            out.append(p)
+    return out
+
+
+# ---------- parts removed from the video ----------
+# settings["video_cuts"] are parts of the source video left out of the export. Every time in the
+# project stays in source time; the export cuts those parts out and moves what follows up.
+
+def kept_ranges(cuts: list[dict], duration: float) -> list[tuple[float, float]]:
+    """The (start, end) parts of the source video that are kept, in order."""
+    out, t = [], 0.0
+    for c in merge_ranges(cuts):
+        if c["start"] > t:
+            out.append((t, min(c["start"], duration)))
+        t = max(t, c["end"])
+    if t < duration:
+        out.append((t, duration))
+    return [(a, b) for a, b in out if b - a > 0.001]
+
+
+def output_time(t: float, cuts: list[dict]) -> float:
+    """Where source time t lands in the exported video (inside a removed part: where it was)."""
+    removed = 0.0
+    for c in merge_ranges(cuts):
+        if t <= c["start"]:
+            break
+        removed += min(t, c["end"]) - c["start"]
+    return t - removed
+
+
+def removed(s: dict, cuts: list[dict]) -> bool:
+    """True when the whole sentence is inside a part removed from the video."""
+    return any(c["start"] - 0.01 <= s["start"] and s["end"] <= c["end"] + 0.01 for c in cuts)
 
 
 def clear_audio(s: dict) -> None:

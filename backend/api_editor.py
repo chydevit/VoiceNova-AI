@@ -19,6 +19,7 @@ from errors import AppError, LineError
 from services import clips, cover, fit, separate, translate, tts
 
 router = APIRouter(prefix="/api/projects/{pid}")
+MIN_CUT = 0.05  # seconds; shorter background cuts are dropped
 
 LABELS = {
     "khmer_text": "Edit Khmer text", "subtitle_text": "Edit subtitle", "subtitle_synced": "Sync subtitle",
@@ -244,11 +245,22 @@ class CoverSettings(BaseModel):
     h: float = Field(12, gt=0, le=100)
 
 
+class TitleSettings(BaseModel):
+    """Text at the top of the video for its whole length (keep in sync with store.default_title)."""
+    text: str = Field("", max_length=300)
+    size: float = Field(7, ge=3, le=14)  # text height, % of the picture's shorter side
+    color: str = Field("#fde047", pattern=r"^#[0-9a-fA-F]{6}$")
+    margin: float = Field(5, ge=0, le=60)  # distance from the top, % of the picture height
+    outline: bool = True
+    box: bool = False
+
+
 class SettingsBody(BaseModel):
     background: Literal["replace", "separate", "duck"] | None = None
     background_volume: float | None = Field(None, ge=0, le=1)
     subtitle_style: SubtitleStyle | None = None
     cover: CoverSettings | None = None
+    title: TitleSettings | None = None
 
 
 @router.patch("/settings")
@@ -266,13 +278,67 @@ def settings(pid: str, body: SettingsBody):
             current["background_volume"] = round(body.background_volume, 2)
         if body.subtitle_style is not None:
             current["subtitle_style"] = body.subtitle_style.model_dump()
+        if body.title is not None:
+            current["title"] = body.title.model_dump()
         if body.cover is not None:
             current["cover"] = {k: round(v, 2) if isinstance(v, float) else v for k, v in body.cover.model_dump().items()}
 
-    label = "Subtitle style" if body.subtitle_style is not None else "Cover original subtitles" if body.cover is not None else "Background settings"
+    label = ("Subtitle style" if body.subtitle_style is not None else "Title" if body.title is not None
+             else "Cover original subtitles" if body.cover is not None else "Background settings")
     project, _ = _edit(pid, apply, label, group="settings")
     if project["settings"]["background"] == "separate":
         project = _start_separation(pid, project)
+    return reply(project)
+
+
+class Cut(BaseModel):
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    gain: float = Field(0, ge=0, le=2)  # background only: 0 = silent, 0.5 = half, 1.5 = louder
+    fade: float = Field(0.05, ge=0, le=5)  # background only: seconds to ramp in and out
+
+
+class CutsBody(BaseModel):
+    cuts: list[Cut] = Field(max_length=500)
+
+
+@router.put("/background/cuts")
+def background_cuts(pid: str, body: CutsBody):
+    """Parts of the background (original audio or music) played at another volume — 0 is silent."""
+    current = store.load(pid)
+    duration = current["video"]["duration"]
+    parts = sentences.layer_ranges([
+        {"start": round(c.start, 3), "end": round(min(c.end, duration), 3), "gain": round(c.gain, 2), "fade": round(c.fade, 2)}
+        for c in body.cuts if min(c.end, duration) - c.start >= MIN_CUT
+    ])
+    before = current["settings"].get("background_cuts", [])
+    label = "Change background volume" if len(parts) >= len(before) else "Restore background"
+    project, _ = _edit(pid, lambda p: p["settings"].update(background_cuts=parts), label)
+    return reply(project)
+
+
+@router.put("/video/cuts")
+def video_cuts(pid: str, body: CutsBody):
+    """The parts removed from the video: the export leaves them out and moves what follows up."""
+    def check(cuts: list[dict], duration: float) -> None:
+        if sum(b - a for a, b in sentences.kept_ranges(cuts, duration)) < 0.5:
+            raise AppError("That would remove the whole video.", hint="Remove a smaller part.")
+
+    return _set_cuts(pid, "video_cuts", body, ("Remove part of the video", "Put back part of the video", "Move video cut"), check)
+
+
+def _set_cuts(pid: str, key: str, body: CutsBody, labels: tuple[str, str, str], check=None) -> dict:
+    current = store.load(pid)
+    duration = current["video"]["duration"]
+    cuts = sentences.merge_ranges([
+        {"start": round(c.start, 3), "end": round(min(c.end, duration), 3)} for c in body.cuts if min(c.end, duration) - c.start >= MIN_CUT
+    ])
+    if check:
+        check(cuts, duration)
+    length = lambda xs: sum(c["end"] - c["start"] for c in xs)  # noqa: E731
+    change = length(cuts) - length(current["settings"].get(key, []))
+    label = labels[0] if change > 0.001 else labels[1] if change < -0.001 else labels[2]
+    project, _ = _edit(pid, lambda p: p["settings"].update({key: cuts}), label)
     return reply(project)
 
 

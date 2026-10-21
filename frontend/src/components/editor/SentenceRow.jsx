@@ -53,7 +53,7 @@ const ICONS = {
 };
 
 // One sentence. Collapsed it's two lines; selected, it opens with every control.
-function SentenceRow({ s, number, isLast, voices, provider, selected, playing, busy, locked, actions, onSelect, onPlay, onSuggest }) {
+function SentenceRow({ s, number, isLast, voices, provider, selected, playing, busy, locked, removed, actions, onSelect, onPlay, onSuggest }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const caret = useRef(null);
   const slot = s.end - s.start;
@@ -76,7 +76,7 @@ function SentenceRow({ s, number, isLast, voices, provider, selected, playing, b
 
   if (!selected) {
     return (
-      <li id={`row-${s.id}`} className={frame} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 64px' }}>
+      <li id={`row-${s.id}`} className={`${frame} ${removed ? 'opacity-50' : ''}`} style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 64px' }}>
         <div role="button" tabIndex={0} onClick={() => onSelect(s)} onKeyDown={(e) => e.key === 'Enter' && onSelect(s)} className="flex cursor-pointer gap-2.5 px-2.5 py-2">
           <div className="w-9 shrink-0 pt-0.5 text-right">
             <span className="block text-xs font-semibold text-faint">{number}</span>
@@ -87,6 +87,7 @@ function SentenceRow({ s, number, isLast, voices, provider, selected, playing, b
               {formatTime(s.start)} · {slot.toFixed(1)}s
               {s.status === 'too_long' && <span className="font-sans font-semibold text-amber-600 dark:text-amber-400">too long</span>}
               {s.shortened && <span className="font-sans text-sky-600 dark:text-sky-400">shortened</span>}
+              {removed && <span className="font-sans font-semibold text-red-600 dark:text-red-400">✂ removed</span>}
             </p>
             <p className={`khmer line-clamp-2 text-sm ${s.khmer_text ? 'text-ink' : 'italic text-faint'}`}>{s.khmer_text || 'No Khmer text yet'}</p>
           </div>
@@ -102,6 +103,7 @@ function SentenceRow({ s, number, isLast, voices, provider, selected, playing, b
         <span className="mr-1 text-sm font-bold text-accent-ink">#{number}</span>
         <Chip tone={status.tone}>{status.text}</Chip>
         {s.shortened && <Chip tone="sky" title="The translation was shortened to fit the time">shortened</Chip>}
+        {removed && <Chip tone="red" title="This sentence is inside a part removed from the video, so it's left out of the export">✂ removed</Chip>}
         <span className="ml-auto flex items-center">
           <IconButton label="Play" onClick={() => onPlay(s)}><Icon d={ICONS.play} /></IconButton>
           <IconButton label="Regenerate the voice" active={s.status === 'edited' || s.status === 'failed'} disabled={disabled || !s.khmer_text}

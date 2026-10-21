@@ -11,3 +11,4 @@ windows/Output/
 windows/Launcher/bin/
 windows/Launcher/obj/
 windows/Launcher/app.ico
+build/

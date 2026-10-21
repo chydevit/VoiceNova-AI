@@ -49,7 +49,15 @@ def default_settings(voice: str = "female", speed: float = 1.0, background: str 
         "voice": voice, "speed": speed, "background": background, "background_volume": default_background_volume(background),
         "subtitle_style": default_subtitle_style(),
         "cover": dict(cover.DEFAULT),
+        "title": default_title(),
+        "background_cuts": [],  # parts of the background that are silent: [{"start", "end"}]
+        "video_cuts": [],  # parts removed from the video (and everything on them): [{"start", "end"}]
     }
+
+
+def default_title() -> dict:
+    """Text shown at the top for the whole video. size and margin are % of the picture; drawn by the browser."""
+    return {"text": "", "size": 7.0, "color": "#fde047", "margin": 5, "outline": True, "box": False}
 
 
 def default_subtitle_style() -> dict:
@@ -105,6 +113,9 @@ def load(pid: str) -> dict:
             save(project)
         project["settings"].setdefault("subtitle_style", default_subtitle_style())  # added after version 2
         project["settings"].setdefault("cover", dict(cover.DEFAULT))
+        project["settings"].setdefault("background_cuts", [])
+        project["settings"].setdefault("title", default_title())
+        project["settings"].setdefault("video_cuts", [])
         return project
 
 

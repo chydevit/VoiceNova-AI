@@ -6,6 +6,7 @@ export   – from the editor: voices only the sentences that changed, then build
 
 generate and export read their request (formats, subtitle images) from work/export.json.
 """
+import base64
 import json
 import shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -122,8 +123,12 @@ def _export(pid: str, progress) -> None:
     request = json.loads((work / "export.json").read_text("utf-8"))
     formats = [f for f in FORMATS if f in request["formats"]]
 
+    # Sentences inside parts removed from the video are left out (and not voiced).
+    removed = settings.get("video_cuts") or []
+    left_out = {s["id"] for s in project["sentences"] if sentences.removed(s, removed)}
+
     # 1. Voice only what changed; every other clip is reused as it is.
-    stale = [s for s in project["sentences"] if s["khmer_text"] and not sentences.has_clip(s)]
+    stale = [s for s in project["sentences"] if s["khmer_text"] and not sentences.has_clip(s) and s["id"] not in left_out]
     if stale:
         provider = _provider()
         progress.step("voice", f"Voicing {len(stale)} changed sentence{'s' if len(stale) != 1 else ''}…")
@@ -137,7 +142,8 @@ def _export(pid: str, progress) -> None:
 
     # 2. The voice track, then each chosen file.
     progress.step("merge", "Building the Khmer voice track…")
-    voice, report = voicetrack.build(folder, project["sentences"], info["duration"], work / "voice.wav")
+    kept_sentences = [s for s in project["sentences"] if s["id"] not in left_out]
+    voice, report = voicetrack.build(folder, kept_sentences, info["duration"], work / "voice.wav")
     if not report["voiced"]:
         raise AppError("There are no voiced sentences to export.", hint="Type Khmer text and press Regenerate on at least one sentence.")
     n = history.next_version(project)
@@ -145,6 +151,10 @@ def _export(pid: str, progress) -> None:
     vdir.mkdir(parents=True, exist_ok=True)
     files: dict[str, str] = {}
     video = folder / info["file"]
+
+    title = None  # (PNG, y) of the title at the top, drawn by the browser
+    if settings.get("title", {}).get("text", "").strip() and (work / "title.json").exists():
+        title = (work / "title.png", json.loads((work / "title.json").read_text("utf-8"))["y"])
 
     background_track = None
     if settings["background"] == "separate" and ({"mp4", "mp4_subs"} & set(formats)):
@@ -158,22 +168,25 @@ def _export(pid: str, progress) -> None:
             "audio": "Saving the Khmer audio…",
         }[kind])
         if kind == "mp4":
-            out = merge.render(video, info, voice, settings, background_track, project["original_gaps"], None, vdir / FILE_NAMES[kind])
+            out = merge.render(video, info, voice, settings, background_track, project["original_gaps"], None, vdir / FILE_NAMES[kind], title)
         elif kind == "mp4_subs":
             images_file = work / "subtitle_images.json"
             if not images_file.exists():
                 raise AppError("The subtitle images are missing.", hint="Reload the page and export again.")
             request_images = json.loads(images_file.read_text("utf-8"))
             strip = request_images["layout"] or {"y": 0, "width": info["width"], "height": info["height"]}
-            overlay = subtitles.build_overlay(project["sentences"], info["duration"], request_images["images"], strip, work)
-            out = merge.render(video, info, voice, settings, background_track, project["original_gaps"], overlay, vdir / FILE_NAMES[kind])
+            overlay = subtitles.build_overlay(kept_sentences, info["duration"], request_images["images"], strip, work)
+            out = merge.render(video, info, voice, settings, background_track, project["original_gaps"], overlay, vdir / FILE_NAMES[kind], title)
         elif kind == "srt":
             bilingual = project["settings"]["subtitle_style"].get("bilingual", False)
-            out = subtitles.write_srt(project["sentences"], info["duration"], vdir / FILE_NAMES[kind], bilingual)
+            out = subtitles.write_srt(kept_sentences, info["duration"], vdir / FILE_NAMES[kind], bilingual, removed)
         else:
-            out = media.export_audio(voice, vdir / f"{FILE_NAMES[kind]}.{request.get('audio_format', 'mp3')}")
+            track = voicetrack.cut(voice, sentences.kept_ranges(removed, info["duration"]), work / "voice_cut.wav") if removed else voice
+            out = media.export_audio(track, vdir / f"{FILE_NAMES[kind]}.{request.get('audio_format', 'mp3')}")
         files[kind] = str(out.relative_to(folder))
 
+    if left_out:
+        progress.warn(f"{len(left_out)} sentence{'s are' if len(left_out) != 1 else ' is'} inside parts removed from the video and {'were' if len(left_out) != 1 else 'was'} left out.")
     if report["cut"]:
         progress.warn(f"{report['cut']} sentence{'s are' if report['cut'] != 1 else ' is'} longer than {'their' if report['cut'] != 1 else 'its'} time and had the end cut — use “Fix automatically” in the editor.")
     if report["missing"]:
@@ -195,8 +208,12 @@ def _provider():
     return provider
 
 
-def write_request(pid: str, formats: list[str], audio_format: str, subtitle_images: dict | None, layout=None) -> None:
+def write_request(pid: str, formats: list[str], audio_format: str, subtitle_images: dict | None, layout=None, title=None) -> None:
     work = store.work_dir(pid)
+    (work / "title.json").unlink(missing_ok=True)
+    if title:
+        (work / "title.png").write_bytes(base64.b64decode(title.data.split(",", 1)[1]))
+        (work / "title.json").write_text(json.dumps({"y": title.y}), "utf-8")
     (work / "export.json").write_text(json.dumps({"formats": formats, "audio_format": audio_format}), "utf-8")
     if subtitle_images:
         # Older pages send full-frame images and no layout; the strip is then the whole frame.

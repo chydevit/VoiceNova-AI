@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private var webView: WKWebView!
     private var spinner: NSProgressIndicator!
     private var status: NSTextField!
+    private var logo: NSImageView! // shown only while starting
     private var server: Process?
     private var port = 8000
     private var quitting = false
@@ -85,15 +86,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         status.maximumNumberOfLines = 0
         status.translatesAutoresizingMaskIntoConstraints = false
 
+        logo = NSImageView(image: NSApp.applicationIconImage)
+        logo.translatesAutoresizingMaskIntoConstraints = false
+
         let content = NSView()
         content.wantsLayer = true
         content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        for view in [webView!, spinner!, status!] { content.addSubview(view) }
+        for view in [webView!, logo!, spinner!, status!] { content.addSubview(view) }
         NSLayoutConstraint.activate([
             webView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             webView.topAnchor.constraint(equalTo: content.topAnchor),
             webView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            logo.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+            logo.bottomAnchor.constraint(equalTo: spinner.topAnchor, constant: -18),
+            logo.widthAnchor.constraint(equalToConstant: 112),
+            logo.heightAnchor.constraint(equalToConstant: 112),
             spinner.centerXAnchor.constraint(equalTo: content.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: content.centerYAnchor, constant: -16),
             status.centerXAnchor.constraint(equalTo: content.centerXAnchor),
@@ -126,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         status.stringValue = message
         status.textColor = busy ? .secondaryLabelColor : .systemRed
         spinner.isHidden = !busy
+        logo.isHidden = false
         webView.isHidden = true
     }
 
@@ -380,6 +389,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return false }
         defer { close(fd) }
+        var reuse: Int32 = 1 // like the server itself: a port that was just closed counts as free
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size))
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
         addr.sin_port = in_port_t(UInt16(port).bigEndian)
@@ -430,6 +441,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         spinner.stopAnimation(nil)
         spinner.isHidden = true
         status.isHidden = true
+        logo.isHidden = true // the page has its own logo
         webView.isHidden = false
     }
 

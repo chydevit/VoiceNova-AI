@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Khmer Voice AI: the Khmer letter ក (Kantumruy Pro Bold, as outlines) speaking, on the app's gradient. -->
+  <defs>
+    <linearGradient id="kva-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366F1"/>
+      <stop offset="0.55" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#D946EF"/>
+    </linearGradient>
+    <radialGradient id="kva-shine" cx="0.28" cy="0.12" r="0.95">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.3"/>
+      <stop offset="0.6" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="100" height="100" rx="23" fill="url(#kva-bg)"/>
+  <rect width="100" height="100" rx="23" fill="url(#kva-shine)"/>
+  <path fill="#fff" transform="translate(13.98 75.00) scale(0.0759 -0.0759)" d="M76 236Q76 327 142.0 376.5Q208 426 323.5 426Q439 426 504.5 376.5Q570 327 570 236V0H400V236Q400 269.5 379.0 287.75Q358 306 323.2325581395349 306Q289 306 267.5 287.75Q246 269.5 246 236V0H76ZM72 478V606H574V478Z"/>
+  <path d="M65 45 q6.5 7 0 14" fill="none" stroke="#fff" stroke-width="5.6" stroke-linecap="round" stroke-opacity="1"/><path d="M73.5 38.5 q9.5 13.5 0 27.0" fill="none" stroke="#fff" stroke-width="5.6" stroke-linecap="round" stroke-opacity="0.78"/><path d="M82 32 q12.5 20 0 40" fill="none" stroke="#fff" stroke-width="5.6" stroke-linecap="round" stroke-opacity="0.55"/>
+</svg>

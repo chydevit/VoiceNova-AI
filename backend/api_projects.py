@@ -86,6 +86,14 @@ class SubtitleLayout(BaseModel):
     height: int = Field(gt=0)
 
 
+class TitleImage(BaseModel):
+    """The title drawn by the browser: a PNG strip of the picture, placed at y."""
+    data: str = Field(pattern=r"^data:image/png;base64,", max_length=20_000_000)
+    y: int = Field(ge=0)
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+
+
 class TextEdit(BaseModel):
     id: str
     khmer_text: str = Field(max_length=2000)
@@ -139,6 +147,7 @@ class ExportBody(BaseModel):
     audio_format: Literal["mp3", "wav"] = "mp3"
     subtitle_images: dict[str, str] | None = None
     subtitle_layout: SubtitleLayout | None = None
+    title_image: TitleImage | None = None  # the title at the top, burned into both videos
 
 
 @router.post("/{pid}/export")
@@ -153,7 +162,7 @@ def export(pid: str, body: ExportBody):
     if project["settings"]["background"] == "separate" and not separate.available() and {"mp4", "mp4_subs"} & set(body.formats):
         raise AppError("“Remove the original voice” needs Demucs, which isn't installed.", hint="Pick another background in Project settings.")
     store.update(pid, export_prefs={"formats": body.formats, "audio_format": body.audio_format})
-    pipeline.write_request(pid, body.formats, body.audio_format, body.subtitle_images, body.subtitle_layout)
+    pipeline.write_request(pid, body.formats, body.audio_format, body.subtitle_images, body.subtitle_layout, body.title_image)
     jobs.start(pid, "export", pipeline.export, busy_status="exporting", done_status="done")
     return reply(store.load(pid))
 

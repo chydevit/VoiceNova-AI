@@ -195,6 +195,9 @@ export default function EditorPage({ id, initial, health }) {
   const { history } = project;
   const warningsKey = (project.warnings || []).join('|');
   const exporting = project.status === 'exporting';
+  const videoCuts = project.settings.video_cuts || [];
+  const removedLength = videoCuts.reduce((sum, c) => sum + (c.end - c.start), 0);
+  const isRemoved = (s) => videoCuts.some((c) => c.start - 0.01 <= s.start && s.end <= c.end + 0.01);
 
   return (
     <div className="flex flex-col lg:h-[calc(100dvh-3.5rem)]">
@@ -206,7 +209,7 @@ export default function EditorPage({ id, initial, health }) {
         <div className="min-w-0 flex-1 basis-48">
           <h1 className="truncate text-sm font-semibold sm:text-base">{project.name}</h1>
           <p className="truncate text-xs text-muted">
-            {formatTime(project.video.duration)} · {sentences.length} sentences · <span className={saving ? 'text-accent-ink' : ''}>{saving ? 'Saving…' : 'All changes saved'}</span>
+            {formatTime(project.video.duration)}{removedLength > 0 && <span className="text-red-600 dark:text-red-400"> → {formatTime(project.video.duration - removedLength)} after cuts</span>} · {sentences.length} sentences · <span className={saving ? 'text-accent-ink' : ''}>{saving ? 'Saving…' : 'All changes saved'}</span>
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
@@ -268,7 +271,7 @@ export default function EditorPage({ id, initial, health }) {
                 <SentenceRow
                   key={s.id} s={s} number={numbers.get(s.id)} isLast={s === sentences[sentences.length - 1]}
                   voices={voices} provider={provider} selected={s.id === selectedId} playing={s.id === playingId}
-                  busy={busy[s.id] || (busy['*'] && ATTENTION.includes(s.status) ? 'regenerate' : undefined)} locked={locked}
+                  busy={busy[s.id] || (busy['*'] && ATTENTION.includes(s.status) ? 'regenerate' : undefined)} locked={locked} removed={isRemoved(s)}
                   actions={actions} onSelect={go} onPlay={play} onSuggest={setSuggestFor}
                 />
               ))}
@@ -315,6 +318,7 @@ export default function EditorPage({ id, initial, health }) {
           <Timeline
             project={project} sentences={sentences} videoRef={control.video} selectedId={selectedId}
             onSelect={setSelectedId} onSeek={seek} onTiming={(sid, start, end) => actions.patch(sid, { start, end })} onAdd={add}
+            onCuts={actions.backgroundCuts} onVideoCuts={actions.videoCuts} onOpenAudio={() => setTab('audio')}
             filmstrip={media.filmstrip} waveform={voiceRemoved ? media.music : media.waveform} voiceRemoved={voiceRemoved}
           />
         </Panel>
@@ -324,7 +328,7 @@ export default function EditorPage({ id, initial, health }) {
         <SuggestDialog projectId={id} sentence={suggesting} onPick={pickSuggestion} onClose={() => setSuggestFor(null)} />
       )}
       {toast && (
-        <div role="status" className="fixed inset-x-0 bottom-4 z-50 mx-auto w-fit max-w-[calc(100vw-32px)] rounded-xl bg-ink px-4 py-2.5 text-sm text-canvas shadow-lg">
+        <div role="status" className="pointer-events-none fixed inset-x-0 bottom-4 z-50 mx-auto w-fit max-w-[calc(100vw-32px)] rounded-xl bg-ink px-4 py-2.5 text-sm text-canvas shadow-lg">
           {toast.text}
         </div>
       )}

@@ -23,7 +23,11 @@ function SetupWarnings({ health }) {
     return <Notice>Can’t reach the server. Start the backend with <code>python main.py</code> in the <code>backend</code> folder, then reload.</Notice>;
   }
   const problems = [];
-  if (!health.ffmpeg) problems.push('FFmpeg is not installed — see the README.');
+  if (!health.ffmpeg) {
+    problems.push(/Mac/.test(navigator.userAgent)
+      ? 'FFmpeg is needed: install Homebrew from brew.sh, run “brew install ffmpeg” in Terminal, then reopen Khmer Voice AI.'
+      : 'FFmpeg is not installed — see the README.');
+  }
   for (const [name, part] of [['Speech-to-text', health.transcribe], ['Translation', health.translate], ['Khmer voice', health.tts]]) {
     if (part && !part.ok) problems.push(`${name}: ${part.reason}.`);
   }
@@ -79,7 +83,7 @@ export default function App() {
       <header className="sticky top-0 z-30 h-14 border-b border-line bg-panel/85 backdrop-blur">
         <div className="flex h-full items-center gap-3 px-3 sm:px-5">
           <a href="#" className="flex items-center gap-2.5">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-base font-bold text-white shadow-sm">ក</span>
+            <img src="/logo.svg" alt="" width="32" height="32" className="h-8 w-8 rounded-[7px] shadow-sm" />
             <span className="hidden leading-tight min-[420px]:block">
               <span className="block whitespace-nowrap text-sm font-semibold">Khmer Voice AI</span>
               <span className="khmer hidden text-[11px] text-muted sm:block">បញ្ចូលសំឡេងខ្មែរដោយ AI</span>

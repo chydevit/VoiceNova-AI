@@ -1,81 +1,65 @@
-"""Draw the app icon (1024×1024 PNG): the app's gradient tile with the Khmer letter ក and a sound wave.
-Usage: python3 make_icon.py out.png   (needs Pillow: pip install pillow)"""
-import sys
+"""Make every app icon from the one logo, frontend/public/logo.svg (macOS: uses Quick Look to draw it).
+
+    python3 desktop/make_icon.py
+
+writes (and these PNGs are committed, so builds don't need to draw anything):
+    desktop/AppIcon.png                     Mac app icon: Apple's grid (824 px tile on 1024) with a soft shadow
+    windows/Launcher/app-icon.png           Windows icon source: the full tile, rounded
+    frontend/public/apple-touch-icon.png    iPhone / iPad home screen (square; iOS rounds it)
+Needs Pillow (pip3 install pillow).
+"""
+import re
+import subprocess
+import tempfile
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFilter
 
+ROOT = Path(__file__).resolve().parent.parent
+LOGO = ROOT / "frontend/public/logo.svg"
 SIZE = 1024
 TILE = 824  # Apple's icon grid: the tile is 824 px with transparent space around it
-RADIUS = 186
-TOP, BOTTOM = (99, 102, 241), (217, 70, 239)  # indigo-500 → fuchsia-500, as in the app's logo
-FONTS = [
-    "/System/Library/Fonts/Supplemental/NotoSansKhmer-VF.ttf",
-    "/System/Library/Fonts/Supplemental/Khmer Sangam MN.ttf",
-]
+CORNER = 0.23  # corner radius as a share of the tile (the logo's rx="23" on 100)
 
 
-def gradient(size: int) -> Image.Image:
-    img = Image.new("RGB", (size, size))
-    px = img.load()
-    for y in range(size):
-        for x in range(size):
-            t = (x + y) / (2 * (size - 1))  # diagonal, top-left → bottom-right
-            px[x, y] = tuple(round(a + (b - a) * t) for a, b in zip(TOP, BOTTOM))
-    return img
+def render_square(size: int) -> Image.Image:
+    """The logo drawn edge to edge (no rounded corners: those are cut here, smoothly)."""
+    svg = re.sub(r'rx="[\d.]+"', 'rx="0"', LOGO.read_text("utf-8"))
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "logo.svg"
+        src.write_text(svg, "utf-8")
+        subprocess.run(["qlmanage", "-t", "-s", str(size), "-o", tmp, str(src)], check=True, capture_output=True)
+        return Image.open(Path(tmp) / "logo.svg.png").convert("RGBA").resize((size, size), Image.LANCZOS)
 
 
-def font(size: int) -> ImageFont.FreeTypeFont:
-    for path in FONTS:
-        if Path(path).exists():
-            f = ImageFont.truetype(path, size)
-            try:
-                f.set_variation_by_name("Bold")
-            except (OSError, ValueError, AttributeError):
-                pass
-            return f
-    return ImageFont.load_default(size)
+def rounded(img: Image.Image) -> Image.Image:
+    """Cut rounded corners, drawn 4× larger and scaled down so the edges are smooth."""
+    size = img.width
+    big = Image.new("L", (size * 4, size * 4), 0)
+    ImageDraw.Draw(big).rounded_rectangle((0, 0, size * 4 - 1, size * 4 - 1), round(size * 4 * CORNER), fill=255)
+    out = img.copy()
+    out.putalpha(big.resize((size, size), Image.LANCZOS))
+    return out
 
 
-def main(out: str) -> None:
+def mac_icon(tile: Image.Image) -> Image.Image:
     icon = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
     offset = (SIZE - TILE) // 2
-
-    # soft shadow under the tile
     shadow = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
-    ImageDraw.Draw(shadow).rounded_rectangle((offset, offset + 18, offset + TILE, offset + TILE + 18), RADIUS, fill=(20, 10, 60, 110))
+    ImageDraw.Draw(shadow).rounded_rectangle((offset, offset + 16, offset + TILE, offset + TILE + 16), round(TILE * CORNER), fill=(30, 15, 70, 105))
     icon.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(22)))
+    icon.alpha_composite(tile.resize((TILE, TILE), Image.LANCZOS), (offset, offset))
+    return icon
 
-    mask = Image.new("L", (TILE, TILE), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((0, 0, TILE - 1, TILE - 1), RADIUS, fill=255)
-    tile = gradient(TILE).convert("RGBA")
-    tile.putalpha(mask)
-    # a light sheen on the top half
-    sheen = Image.new("RGBA", (TILE, TILE), (0, 0, 0, 0))
-    ImageDraw.Draw(sheen).ellipse((-TILE * 0.3, -TILE * 0.9, TILE * 1.3, TILE * 0.45), fill=(255, 255, 255, 34))
-    sheen.putalpha(Image.composite(sheen.getchannel("A"), Image.new("L", (TILE, TILE), 0), mask))
-    tile.alpha_composite(sheen)
 
-    draw = ImageDraw.Draw(tile)
-    # the Khmer letter ក, a little above the middle
-    glyph = font(520)
-    box = draw.textbbox((0, 0), "ក", font=glyph)
-    w, h = box[2] - box[0], box[3] - box[1]
-    draw.text(((TILE - w) / 2 - box[0], TILE * 0.40 - h / 2 - box[1]), "ក", font=glyph, fill=(255, 255, 255, 255))
-    # a sound wave under it
-    bars = [0.35, 0.6, 1.0, 0.75, 0.45, 0.85, 0.55, 0.3]
-    bar_w, gap, max_h = 34, 26, 150
-    total = len(bars) * bar_w + (len(bars) - 1) * gap
-    x = (TILE - total) / 2
-    mid = TILE * 0.78
-    for b in bars:
-        bh = max_h * b
-        draw.rounded_rectangle((x, mid - bh / 2, x + bar_w, mid + bh / 2), bar_w / 2, fill=(255, 255, 255, 225))
-        x += bar_w + gap
-
-    icon.alpha_composite(tile, (offset, offset))
-    icon.save(out)
+def main() -> None:
+    square = render_square(SIZE)
+    tile = rounded(square)
+    mac_icon(tile).save(ROOT / "desktop/AppIcon.png")
+    tile.save(ROOT / "windows/Launcher/app-icon.png")
+    square.convert("RGB").resize((180, 180), Image.LANCZOS).save(ROOT / "frontend/public/apple-touch-icon.png")
+    print("Icons written: desktop/AppIcon.png, windows/Launcher/app-icon.png, frontend/public/apple-touch-icon.png")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "icon.png")
+    main()

@@ -32,11 +32,14 @@ def _stamp(t: float) -> str:
     return f"{h:02}:{m:02}:{s:02},{ms:03}"
 
 
-def write_srt(items: list[dict], duration: float, path: Path, bilingual: bool = False) -> Path:
-    """bilingual: the original line goes under the Khmer one."""
+def write_srt(items: list[dict], duration: float, path: Path, bilingual: bool = False, cuts: list[dict] | None = None) -> Path:
+    """bilingual: the original line goes under the Khmer one. cuts: parts removed from the video,
+    so the times match the exported (shorter) video."""
+    cuts = cuts or []
+    timed = [(s, text, sentences.output_time(a, cuts), sentences.output_time(b, cuts)) for s, text, a, b in spans(items, duration)]
     blocks = [
         f"{n}\n{_stamp(a)} --> {_stamp(b)}\n{text}\n" + (f"{s['original_text']}\n" if bilingual and s["original_text"] else "")
-        for n, (s, text, a, b) in enumerate(spans(items, duration), 1)
+        for n, (s, text, a, b) in enumerate((t for t in timed if t[3] - t[2] >= 0.1), 1)
     ]
     path.write_text("\n".join(blocks), "utf-8")
     return path

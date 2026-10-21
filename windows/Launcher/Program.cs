@@ -63,6 +63,7 @@ sealed class Launcher : Form
     static readonly object LogLock = new object();
 
     readonly bool smoke;
+    readonly PictureBox logo = new PictureBox();
     readonly Label title = new Label();
     readonly Label detail = new Label();
     readonly ProgressBar bar = new ProgressBar();
@@ -86,10 +87,13 @@ sealed class Launcher : Form
         BackColor = Color.White;
         Font = new Font("Segoe UI", 9.5f);
 
-        title.SetBounds(24, 22, 472, 28);
+        logo.SetBounds(24, 24, 48, 48);
+        logo.SizeMode = PictureBoxSizeMode.Zoom;
+        try { logo.Image = Image.FromFile(Path.Combine(Res, "logo.png")); } catch { }
+        title.SetBounds(88, 22, 408, 28);
         title.Font = new Font("Segoe UI Semibold", 12f);
         title.Text = "Starting Khmer Voice AI…";
-        detail.SetBounds(24, 54, 472, 56);
+        detail.SetBounds(88, 54, 408, 56);
         detail.ForeColor = Color.DimGray;
         bar.SetBounds(24, 116, 472, 10);
         bar.Style = ProgressBarStyle.Marquee;
@@ -97,7 +101,7 @@ sealed class Launcher : Form
         primary.SetBounds(356, 140, 140, 32);
         secondary.SetBounds(206, 140, 140, 32);
         primary.Visible = secondary.Visible = false;
-        Controls.AddRange(new Control[] { title, detail, bar, primary, secondary });
+        Controls.AddRange(new Control[] { logo, title, detail, bar, primary, secondary });
         if (smoke) { ShowInTaskbar = false; WindowState = FormWindowState.Minimized; }
     }
 

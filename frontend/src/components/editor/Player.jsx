@@ -2,12 +2,18 @@ import { useEffect, useRef, useState } from 'react';
 import { formatTime } from '../../api.js';
 import { drawSubtitle, loadSubtitleFont } from '../../lib/subtitleImages.js';
 import { IconButton } from '../ui.jsx';
+import { gainAt } from '../../lib/background.js';
 
 const inGap = (gaps, t) => gaps.some((g) => t >= g.start && t <= g.end); // deleted sentence: original audio at full volume
-
 // Levels at time t, as they will sound in the export: the original audio (the video's own sound)
 // and the voice-free music track (when the original voice has been removed).
 function levels(p, t) {
+  const left = gainAt(p.settings.background_cuts || [], t); // background volume parts
+  const { original, music } = uncut(p, t);
+  return { original: original * left, music: music * left };
+}
+
+function uncut(p, t) {
   const { background, background_volume: volume } = p.settings;
   const gap = inGap(p.original_gaps, t);
   if (background === 'separate' && p.background_url) return { original: gap ? 1 : 0, music: gap ? 0 : Math.min(1, volume) };
@@ -147,6 +153,13 @@ export default function Player({ project, sentences, control, onTime, time, subt
         v.pause();
         return;
       }
+      // Parts removed from the video are skipped, as in the export.
+      const removedPart = (p.settings.video_cuts || []).find((c) => t >= c.start && t < c.end - 0.02);
+      if (removedPart) {
+        v.currentTime = removedPart.end;
+        frame = requestAnimationFrame(loop);
+        return;
+      }
       const level = levels(p, t);
       v.volume = level.original;
       if (music.current) music.current.volume = level.music;
@@ -198,6 +211,7 @@ export default function Player({ project, sentences, control, onTime, time, subt
     if (target) onStep(target);
   };
   const current = sentences.find((x) => time >= x.start && time < x.end);
+  const inRemoved = (settings.video_cuts || []).some((c) => time >= c.start && time < c.end - 0.02);
   const background = settings.background === 'replace' ? 'original audio off'
     : separate ? (project.background_url ? `music ${Math.round(settings.background_volume * 100)}% · original voice removed` : 'original quiet until its voice is removed')
       : `original ${Math.round(settings.background_volume * 100)}%`;
@@ -212,6 +226,9 @@ export default function Player({ project, sentences, control, onTime, time, subt
         {box && (
           <canvas ref={subs} width={width} height={height} aria-hidden="true" className="pointer-events-none absolute"
             style={{ left: box.left, top: box.top, width: box.width, height: box.height }} />
+        )}
+        {inRemoved && !playing && (
+          <span className="pointer-events-none absolute left-3 top-3 rounded-md bg-red-600 px-2 py-1 text-xs font-semibold text-white shadow">✂ Removed from the video</span>
         )}
         {!playing && (
           <button type="button" onClick={toggle} aria-label="Play"

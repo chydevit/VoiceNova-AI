@@ -6,12 +6,13 @@
 #   ./build_mac_app.sh --install           …and copy it to /Applications
 #   ./build_mac_app.sh --release           for anyone: the app carries the backend and the web page,
 #                                          sets itself up on first launch, and is zipped for download
-#                                          (desktop/build/Khmer-Voice-AI-<version>-macOS-<arch>.zip)
+#                                          (desktop/build/Khmer-Voice-AI-<version>-<arm64|x64>.zip and .dmg)
+#   ARCH=x86_64 ./build_mac_app.sh --release   the Intel version (on an Intel Mac, or cross-built)
 #   KEYS_FILE=~/path/keys.json ./build_mac_app.sh --install
 #       optional: a JSON file of API keys ({"GEMINI_API_KEY": "…"}) the app reads at start-up
 #       (only read, never copied; keys in backend/.env win).
 #
-# Needs the Xcode command-line tools (swiftc). Pillow (pip3 install pillow) makes the icon.
+# Needs the Xcode command-line tools (swiftc).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -19,6 +20,8 @@ ROOT="$(cd "$HERE/.." && pwd)"
 APP="$HERE/build/Khmer Voice AI.app"
 VERSION="${VERSION:-1.0.0}"
 MODE="${1:-}"
+ARCH="${ARCH:-$(uname -m)}"                         # arm64 (Apple silicon) or x86_64 (Intel)
+LABEL="$([ "$ARCH" = arm64 ] && echo arm64 || echo x64)"  # as in the download names
 
 echo "→ Building the web app"
 if [ -d "$ROOT/frontend/node_modules" ]; then
@@ -34,24 +37,19 @@ fi
 echo "→ Compiling the Mac app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos13.0" \
+swiftc -O -swift-version 5 -target "$ARCH-apple-macos13.0" \
   -framework AppKit -framework WebKit \
   "$HERE/KhmerVoiceAI.swift" -o "$APP/Contents/MacOS/KhmerVoiceAI"
 
-echo "→ Making the icon"
-if python3 -c "import PIL" 2>/dev/null; then
-  TMP="$(mktemp -d)"
-  python3 "$HERE/make_icon.py" "$TMP/icon.png"
-  mkdir "$TMP/AppIcon.iconset"
-  for s in 16 32 128 256 512; do
-    sips -z $s $s "$TMP/icon.png" --out "$TMP/AppIcon.iconset/icon_${s}x${s}.png" >/dev/null
-    sips -z $((s * 2)) $((s * 2)) "$TMP/icon.png" --out "$TMP/AppIcon.iconset/icon_${s}x${s}@2x.png" >/dev/null
-  done
-  iconutil -c icns "$TMP/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
-  rm -rf "$TMP"
-else
-  echo "  (Pillow not found — the app gets the default icon. pip3 install pillow, then build again.)"
-fi
+echo "→ Making the icon"   # from desktop/AppIcon.png — redraw it with make_icon.py after changing the logo
+TMP="$(mktemp -d)"
+mkdir "$TMP/AppIcon.iconset"
+for s in 16 32 128 256 512; do
+  sips -z $s $s "$HERE/AppIcon.png" --out "$TMP/AppIcon.iconset/icon_${s}x${s}.png" >/dev/null
+  sips -z $((s * 2)) $((s * 2)) "$HERE/AppIcon.png" --out "$TMP/AppIcon.iconset/icon_${s}x${s}@2x.png" >/dev/null
+done
+iconutil -c icns "$TMP/AppIcon.iconset" -o "$APP/Contents/Resources/AppIcon.icns"
+rm -rf "$TMP"
 
 if [ "$MODE" = "--release" ]; then
   echo "→ Bundling the backend and the web page"
@@ -63,7 +61,7 @@ if [ "$MODE" = "--release" ]; then
   # uv: installs Python and the packages on first launch, so users need nothing installed first.
   if [ -z "${UV_BIN:-}" ]; then
     UV_TMP="$(mktemp -d)"
-    curl -fsSL "https://github.com/astral-sh/uv/releases/latest/download/uv-$(uname -m | sed 's/arm64/aarch64/')-apple-darwin.tar.gz" | tar -xz -C "$UV_TMP"
+    curl -fsSL "https://github.com/astral-sh/uv/releases/latest/download/uv-$(echo "$ARCH" | sed 's/arm64/aarch64/')-apple-darwin.tar.gz" | tar -xz -C "$UV_TMP"
     UV_BIN="$(find "$UV_TMP" -type f -name uv | head -1)"
   fi
   install -m 755 "$UV_BIN" "$APP/Contents/Resources/uv"
@@ -110,10 +108,17 @@ codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 echo "✓ Built: $APP"
 
 if [ "$MODE" = "--release" ]; then
-  ZIP="$HERE/build/Khmer-Voice-AI-$VERSION-macOS-$(uname -m).zip"
-  rm -f "$ZIP"
+  ZIP="$HERE/build/Khmer-Voice-AI-$VERSION-$LABEL.zip"
+  DMG="$HERE/build/Khmer-Voice-AI-$VERSION-$LABEL.dmg"
+  rm -f "$ZIP" "$DMG"
   ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
-  echo "✓ Release zip: $ZIP ($(du -h "$ZIP" | cut -f1))"
+  # The .dmg opens a window with the app and a shortcut to Applications: drag one onto the other.
+  STAGE="$(mktemp -d)"
+  cp -R "$APP" "$STAGE/"
+  ln -s /Applications "$STAGE/Applications"
+  hdiutil create -quiet -volname "Khmer Voice AI" -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+  rm -rf "$STAGE"
+  echo "✓ Release: $ZIP ($(du -h "$ZIP" | cut -f1)), $DMG ($(du -h "$DMG" | cut -f1))"
 fi
 
 if [ "$MODE" = "--install" ]; then

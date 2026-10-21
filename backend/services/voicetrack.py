@@ -34,6 +34,12 @@ def build(folder: Path, items: list[dict], duration: float, out: Path) -> tuple[
     return media.write_wav(out, np.clip(track, -32768, 32767).astype(np.int16)), report
 
 
+def cut(track: Path, kept: list[tuple[float, float]], out: Path) -> Path:
+    """The voice track with the parts removed from the video left out (for "Khmer audio only")."""
+    samples = media.read_wav(track)
+    return media.write_wav(out, np.concatenate([samples[int(a * SR):int(b * SR)] for a, b in kept]))
+
+
 def _fade_out(samples: np.ndarray, seconds: float = 0.08) -> np.ndarray:
     n = min(len(samples), int(seconds * SR))
     if n:

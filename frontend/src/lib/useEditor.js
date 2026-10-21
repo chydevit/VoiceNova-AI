@@ -125,6 +125,8 @@ export function useEditor(id, initial) {
       () => say(fill === 'original' ? 'Deleted — the original audio plays there.' : 'Deleted — silence there.')),
     applyAll: (fields) => action(() => api.applyAll(id, fields), null, (b) => say(`Applied to ${b.changed} sentences.`)),
     settings: (body) => action(() => api.settings(id, body)),
+    backgroundCuts: (cuts, note) => action(() => api.backgroundCuts(id, cuts), null, () => note && say(note)),
+    videoCuts: (cuts, note) => action(() => api.videoCuts(id, cuts), null, () => note && say(note)),
     undo: () => action(() => api.undo(id), null, (b) => say(b.label ? `Undid: ${b.label}` : 'Nothing to undo.')),
     redo: () => action(() => api.redo(id), null, (b) => say(b.label ? `Redid: ${b.label}` : 'Nothing to redo.')),
     restore: (n) => action(() => api.restoreVersion(id, n), null, () => say(`Restored the edits of export ${n}. Undo brings your later edits back.`)),

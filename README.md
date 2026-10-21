@@ -1,3 +1,5 @@
+<p align="center"><img src="frontend/public/logo.svg" width="112" alt="Khmer Voice AI logo"></p>
+
 # Khmer Voice AI · បញ្ចូលសំឡេងខ្មែរដោយ AI
 
 Upload a video in any language and get it back with a **Khmer AI voiceover**, timed to the original speech.
@@ -11,27 +13,37 @@ Upload a video in any language and get it back with a **Khmer AI voiceover**, ti
 
 You can then preview it, download the MP4, and download a Khmer `.srt` subtitle file. Subtitles can also be burned into the video.
 
-## Download the Mac app
+## Download
 
-**[⬇ Download the latest release](https://github.com/chydevit/VoiceNova-AI/releases/latest)**: `Khmer-Voice-AI-…-macOS-arm64.zip`, for Macs with Apple silicon on macOS 13 or newer.
+**[⬇ Download the latest release](https://github.com/chydevit/VoiceNova-AI/releases/latest)**. Choose the file for your computer:
 
-1. **Install the two tools it needs** (one time):
-   - **Python 3.10 or newer**, from [python.org/downloads](https://www.python.org/downloads/macos/), or `brew install python`.
-   - **FFmpeg**: `brew install ffmpeg` (needs [Homebrew](https://brew.sh)).
-2. **Install the app:** unzip it and drag **Khmer Voice AI** into **Applications**.
-3. **Open it the first time:** the app isn't signed by Apple, so **right-click it → Open → Open**. If macOS still refuses, go to System Settings → Privacy & Security → **Open Anyway**.
-4. **Wait for the first-launch setup.** The app installs its components by itself: about 400 MB, a few minutes, one time only.
-5. **Add your key:** click **⚙ Settings** and paste an AI key for translation. A [Google Gemini key](https://aistudio.google.com/apikey) is free to start with. Then drop in a video.
+| Computer | File | How to install |
+|---|---|---|
+| **Mac with Apple silicon** (M1–M4) | `Khmer-Voice-AI-…-arm64.dmg` | Open it and drag **Khmer Voice AI** to **Applications** |
+| **Mac with Intel** | `Khmer-Voice-AI-…-x64.dmg` | The same |
+| **Windows 10 / 11** | `Khmer-Voice-AI-Setup-…-x64.exe` | Run it (no administrator needed). Or unzip `…-win-x64-portable.zip` and run **Khmer Voice AI.exe** |
+| **Linux** (Ubuntu, Debian…) | `Khmer-Voice-AI-…-x86_64.AppImage` | Make it executable (`chmod +x`), then double-click it. Or install `khmer-voice-ai_…_amd64.deb`: `sudo apt install ./khmer-voice-ai_…_amd64.deb` |
 
-Your projects and settings stay on your Mac, in `~/Library/Application Support/Khmer Voice AI`.
+The `.zip` files for Mac contain the same app as the `.dmg`.
 
-**Optional: removing the original voice (keeping the music).** This needs one large extra download, about 1 GB. Run it in Terminal, then reopen the app:
+**On the first launch:**
+1. **The app sets itself up.** It downloads its own Python and components: about 400 MB, a few minutes, one time only. Nothing has to be installed first, except FFmpeg on a Mac (see below).
+2. **Add your key:** click **⚙ Settings** and paste an AI key for translation. A [Google Gemini key](https://aistudio.google.com/apikey) is free to start with. Then drop in a video.
 
-```bash
-~/Library/"Application Support"/"Khmer Voice AI"/venv/bin/pip install torch torchaudio demucs
-```
+**Good to know:**
+- **Mac:** the app isn't signed by Apple, so the first time **right-click it → Open → Open**. If macOS still refuses, go to System Settings → Privacy & Security → **Open Anyway**. The app also needs FFmpeg: install [Homebrew](https://brew.sh), then run `brew install ffmpeg`.
+- **Windows:** SmartScreen may say "Windows protected your PC". Click **More info → Run anyway**. The app opens in a Microsoft Edge app window.
+- **Linux:** the app opens in Chrome, Chromium, Edge or Brave if you have one, or otherwise in your default browser.
+- **Your projects and settings stay on your computer:**
+  - Mac: `~/Library/Application Support/Khmer Voice AI`
+  - Windows: `%LOCALAPPDATA%\Khmer Voice AI`
+  - Linux: `~/.local/share/khmer-voice-ai`
+- **Removing the original voice (keeping the music)** is an optional extra download of about 1 GB. On a Mac, run this, then reopen the app:
+  ```bash
+  ~/Library/"Application Support"/"Khmer Voice AI"/venv/bin/pip install torch torchaudio demucs
+  ```
 
-On Windows or Linux, or to change the code, run it from source as described below.
+To change the code, run it from source as described below.
 
 ---
 
