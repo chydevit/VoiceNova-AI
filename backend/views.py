@@ -21,6 +21,7 @@ def public(project: dict) -> dict:
     ]
     out["versions"] = [version(base, v) for v in project.get("versions", [])]
     out["counts"] = dict(Counter(s["status"] for s in out["sentences"]))
+    out["counts"]["check_voice"] = sum(1 for s in out["sentences"] if s.get("voice_warning") and s["audio_url"])
     return out
 
 
@@ -49,7 +50,8 @@ def summary(project: dict) -> dict:
         "updated_at": project.get("updated_at", project["created_at"]),
         "duration": (project.get("video") or {}).get("duration"),
         "sentences": len(project["sentences"]),
-        "needs_work": statuses.get("edited", 0) + statuses.get("too_long", 0) + statuses.get("failed", 0),
+        "needs_work": statuses.get("edited", 0) + statuses.get("too_long", 0) + statuses.get("failed", 0)
+                      + sum(1 for s in project["sentences"] if s.get("voice_warning") and s["status"] in ("ok", "too_long")),
         "versions": len(project.get("versions", [])),
         "thumb_url": f"{base}/thumb.jpg" if project.get("video") else None,
     }

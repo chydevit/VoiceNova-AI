@@ -43,7 +43,7 @@ class MmsTTS(TTSProvider):
                     raise AppError("Couldn't load the MMS Khmer voice model.", hint="The first run downloads it — check your internet connection.", detail=str(err)) from err
         return self._model, self._tokenizer
 
-    def synthesize(self, text: str, gender: str, speed: float, out: Path) -> Path:
+    def synthesize(self, text: str, gender: str, speed: float, out: Path, attempt: int = 0) -> Path:
         import torch
 
         from services import media
@@ -54,7 +54,7 @@ class MmsTTS(TTSProvider):
             raise LineError("The offline voice can't read this line.", detail=text[:80])
         with self._lock:  # one generation at a time; the model is not thread-safe
             model.speaking_rate = speed
-            torch.manual_seed(0)  # same text → same delivery
+            torch.manual_seed(attempt)  # same text → same delivery; another try → another delivery
             with torch.no_grad():
                 waveform = model(**inputs).waveform[0].cpu().numpy()
         wav = out.with_suffix(".mms.wav")

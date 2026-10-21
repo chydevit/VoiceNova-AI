@@ -62,7 +62,11 @@ def default_title() -> dict:
 
 def default_subtitle_style() -> dict:
     """How burned-in subtitles look. size and margin are % of the picture; drawn by the browser."""
-    return {"size": 5.5, "color": "#ffffff", "outline": True, "box": False, "position": "bottom", "margin": 7, "bilingual": False}
+    return {
+        "size": 5.5, "color": "#ffffff", "outline": True, "box": False, "position": "bottom", "margin": 7, "bilingual": False,
+        "x": 50, "align": "center", "width": 90, "font": "Kantumruy Pro", "bold": True,
+        "outline_color": "#000000", "outline_width": 20, "box_color": "#000000", "box_opacity": 0.6, "shadow": False,
+    }
 
 
 def default_background_volume(background: str) -> float:

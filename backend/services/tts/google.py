@@ -51,7 +51,7 @@ class GoogleTTS(TTSProvider):
         match = next((v for v in self._voices if v.get("ssmlGender") == want), self._voices[0])
         return match["name"]
 
-    def synthesize(self, text: str, gender: str, speed: float, out: Path) -> Path:
+    def synthesize(self, text: str, gender: str, speed: float, out: Path, attempt: int = 0) -> Path:
         ok, reason = self.status()
         if not ok:
             raise AppError("Google TTS isn't set up.", hint=reason)

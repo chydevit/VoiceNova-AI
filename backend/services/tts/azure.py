@@ -21,7 +21,7 @@ class AzureTTS(TTSProvider):
             return False, "Set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION in backend/.env"
         return True, ""
 
-    def synthesize(self, text: str, gender: str, speed: float, out: Path) -> Path:
+    def synthesize(self, text: str, gender: str, speed: float, out: Path, attempt: int = 0) -> Path:
         ok, reason = self.status()
         if not ok:
             raise AppError("Azure voices aren't set up.", hint=reason)

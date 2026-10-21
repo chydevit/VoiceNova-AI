@@ -43,6 +43,7 @@ export const api = {
   add: (id, body) => request(`${project(id)}/sentences`, { method: 'POST', json: body }),
   deleteSentence: (id, sid, fill) => request(`${sentence(id, sid)}?fill=${fill}`, { method: 'DELETE' }),
   fix: (id, sid) => request(`${sentence(id, sid)}/fix`, { method: 'POST' }),
+  checkVoices: (id) => request(`${project(id)}/sentences/check-voices`, { method: 'POST' }),
   suggest: (id, sid) => request(`${sentence(id, sid)}/suggest`, { method: 'POST' }),
   settings: (id, body) => request(`${project(id)}/settings`, { method: 'PATCH', json: body }),
   backgroundCuts: (id, cuts) => request(`${project(id)}/background/cuts`, { method: 'PUT', json: { cuts } }),

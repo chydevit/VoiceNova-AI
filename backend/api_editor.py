@@ -3,6 +3,7 @@
 Every change is one undo step (typing in one field is grouped). Voicing happens outside the
 project lock, and a finished clip is only stored if the sentence still says the same thing.
 """
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Literal
 
 from fastapi import APIRouter
@@ -16,7 +17,7 @@ import sentences
 import store
 from api_projects import reply, restore_version
 from errors import AppError, LineError
-from services import clips, cover, fit, separate, translate, tts
+from services import clips, cover, fit, media, separate, translate, tts, voicecheck
 
 router = APIRouter(prefix="/api/projects/{pid}")
 MIN_CUT = 0.05  # seconds; shorter background cuts are dropped
@@ -105,7 +106,7 @@ def regenerate_many(pid: str, body: RegenerateBody):
     return _regenerate(pid, body.ids, body.force)
 
 
-def _regenerate(pid: str, ids: list[str] | None, force: bool) -> dict:
+def _regenerate(pid: str, ids: list[str] | None, force: bool | set[str], **extra) -> dict:
     project = store.load(pid)
     _check(project)
     targets = [
@@ -116,7 +117,7 @@ def _regenerate(pid: str, ids: list[str] | None, force: bool) -> dict:
         if ids and len(ids) == 1:
             sentences.find(project, ids[0])
             raise AppError("This sentence has no Khmer text to voice.", hint="Type the Khmer text first.")
-        return reply(project, voiced=0)
+        return reply(project, voiced=0, **extra)
     provider = _provider()
     wanted = {s["id"] for s in targets}
 
@@ -141,7 +142,62 @@ def _regenerate(pid: str, ids: list[str] | None, force: bool) -> dict:
         project = store.mutate(pid, finish)
     if errors and len(errors) == len(targets) and not isinstance(errors[0], LineError):
         raise errors[0]  # e.g. no internet: show it, not just a red mark on the line
-    return reply(project, voiced=len(targets) - len(errors), failed=len(errors))
+    return reply(project, voiced=len(targets) - len(errors), failed=len(errors), **extra)
+
+
+@router.post("/sentences/check-voices")
+def check_voices(pid: str):
+    """“Check voices”: find the clips that came out wrong (also ones made before clips were checked)
+    and voice them again; lines with words in other letters, which the voice skips, are written in
+    Khmer first when a translator is set up. One undo step for the rewritten lines."""
+    project = store.load(pid)
+    _check(project)
+    folder = store.project_dir(pid)
+    wrong: set[str] = set()
+    foreign: list[dict] = []
+    for s in project["sentences"]:
+        if not sentences.has_clip(s):
+            continue
+        if voicecheck.unreadable(s["khmer_text"]):
+            foreign.append(s)
+        elif s.get("voice_warning") or voicecheck.problem(media.read_wav(folder / s["audio_file_path"]), s["khmer_text"], s["speed"]):
+            wrong.add(s["id"])
+    rewritten: dict[str, dict] = {}  # id -> the changed fields: Khmer letters only, voiced and fitted to its time
+    if foreign and translate.provider():
+        lines = [{"id": s["id"], "text": s["original_text"], "room": s["end"] - s["start"], "khmer": s["khmer_text"]} for s in foreign]
+        texts = translate.retranslate(lines, pipeline.source_language(project))
+        provider, index = _provider(), {s["id"]: i for i, s in enumerate(project["sentences"])}
+
+        def voice(s: dict) -> dict:
+            draft = {**s, "khmer_text": sentences.clean(texts[s["id"]]), "shortened": False}
+            changes, _ = fit.fit(folder, draft, sentences.room_end(project, index[s["id"]]), provider, translate.shorten)
+            return {"khmer_text": draft["khmer_text"], "shortened": False, **changes}
+
+        with ThreadPoolExecutor(max_workers=max(1, config.TTS_WORKERS)) as pool:
+            futures = {pool.submit(voice, s): s for s in foreign if texts.get(s["id"])}
+            for future in as_completed(futures):
+                try:
+                    rewritten[futures[future]["id"]] = future.result()
+                except AppError:
+                    pass  # keeps its text and gets the warning below
+
+    before = {s["id"]: s for s in foreign}
+
+    def apply(p: dict) -> None:
+        for cur in p["sentences"]:
+            old = before.get(cur["id"])
+            if not old or any(cur[k] != old[k] for k in ("khmer_text", "voice", "speed", "start", "end")):
+                continue  # not a line with other letters, or edited meanwhile
+            if cur["id"] in rewritten:
+                cur.update(rewritten[cur["id"]])
+            else:
+                cur["voice_warning"] = clips.text_warning(cur["khmer_text"])  # clips made before the check have none
+            sentences.refresh(cur)
+
+    if foreign:
+        _edit(pid, apply, "Write words in other letters in Khmer" if rewritten else "Check voices")
+    return _regenerate(pid, sorted(wrong), True, checked=sum(1 for s in project["sentences"] if sentences.has_clip(s)),
+                       wrong=len(wrong) + len(foreign), rewritten=len(rewritten))
 
 
 @router.post("/sentences/{sid}/fix")
@@ -151,8 +207,9 @@ def fix_sentence(pid: str, sid: str):
     i, s = sentences.find(project, sid)
     if not s["khmer_text"]:
         raise AppError("This sentence has no Khmer text yet.")
-    shorten = translate.shorten if translate.provider() else None
-    changes, notes = fit.fit(store.project_dir(pid), s, sentences.room_end(project, i), _provider(), shorten)
+    ready = translate.provider()
+    changes, notes = fit.fit(store.project_dir(pid), s, sentences.room_end(project, i), _provider(),
+                             translate.shorten if ready else None, translate.respeller(pipeline.source_language(project)) if ready else None, force=bool(s.get("voice_warning")))
 
     def apply(p: dict) -> None:
         _, cur = sentences.find(p, sid)
@@ -231,8 +288,18 @@ class SubtitleStyle(BaseModel):
     outline: bool = True
     box: bool = False  # dark box behind the text
     position: Literal["bottom", "top"] = "bottom"
-    margin: float = Field(7, ge=2, le=30)  # distance from that edge, % of the picture height
+    margin: float = Field(7, ge=0, le=95)  # distance from that edge, % of the picture height
     bilingual: bool = False  # also show the original text, smaller, under the Khmer
+    x: float = Field(50, ge=0, le=100)  # where the text sits across the picture, % of its width
+    align: Literal["left", "center", "right"] = "center"  # which side of the text sits at x
+    width: float = Field(90, ge=20, le=100)  # longest line before wrapping, % of the picture width
+    font: Literal["Kantumruy Pro", "Noto Sans Khmer", "Battambang", "Hanuman", "Koulen", "Moul"] = "Kantumruy Pro"
+    bold: bool = True
+    outline_color: str = Field("#000000", pattern=r"^#[0-9a-fA-F]{6}$")
+    outline_width: float = Field(20, ge=0, le=60)  # % of the text height
+    box_color: str = Field("#000000", pattern=r"^#[0-9a-fA-F]{6}$")
+    box_opacity: float = Field(0.6, ge=0, le=1)
+    shadow: bool = False
 
 
 class CoverSettings(BaseModel):

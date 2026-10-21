@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, formatTime } from '../../api.js';
 import { VoicePreview } from '../../lib/previewAudio.js';
-import { renderSubtitleImages } from '../../lib/subtitleImages.js';
+import { DEFAULT_TITLE, renderSubtitleImages, renderTitleImage } from '../../lib/subtitleImages.js';
 import { useEditor } from '../../lib/useEditor.js';
 import { Button, Chip, ErrorBox, IconButton, Notice, Panel, Tabs, inputCss } from '../ui.jsx';
 import CoverPanel from './CoverPanel.jsx';
@@ -10,10 +10,12 @@ import Player from './Player.jsx';
 import SentenceRow from './SentenceRow.jsx';
 import SettingsPanel from './SettingsPanel.jsx';
 import SubtitlePanel from './SubtitlePanel.jsx';
+import TitlePanel from './TitlePanel.jsx';
 import SuggestDialog from './SuggestDialog.jsx';
 import Timeline from './Timeline.jsx';
 
 const ATTENTION = ['edited', 'failed', 'too_long', 'empty'];
+const toCheck = (s) => ATTENTION.includes(s.status) || (!!s.voice_warning && !!s.audio_url); // incl. a voice that may be wrong
 const subtitleText = (s) => (s.subtitle_text ?? s.khmer_text).trim();
 
 // Edit after generating: change any sentence, hear it at once, export only what changed.
@@ -32,6 +34,7 @@ export default function EditorPage({ id, initial, health }) {
   const [media, setMedia] = useState({ filmstrip: null, waveform: null });
   const [subtitleDraft, setSubtitleDraft] = useState(null); // style being tried out, not saved yet
   const [showSubtitles, setShowSubtitles] = useState(true);
+  const [titleDraft, setTitleDraft] = useState(null); // title being written, not saved yet
   const [coverDraft, setCoverDraft] = useState(null); // covering area being placed, not saved yet
   const [editingCover, setEditingCover] = useState(false);
   const control = useMemo(() => ({ video: { current: null }, preview: new VoicePreview(), stopAt: { current: null } }), []);
@@ -136,9 +139,13 @@ export default function EditorPage({ id, initial, health }) {
     }
   }, [actions]);
 
-  async function exportVideo(formats, audioFormat, style = project.settings.subtitle_style) {
+  async function exportVideo(formats, audioFormat, style = project.settings.subtitle_style, title = project.settings.title) {
     setTab('export');
     const body = { formats, audio_format: audioFormat };
+    if (formats.includes('mp4') || formats.includes('mp4_subs')) {
+      const image = await renderTitleImage(title, project.video.width, project.video.height);
+      if (image) body.title_image = image;
+    }
     if (formats.includes('mp4_subs')) {
       const items = sentences.filter(subtitleText).map((s) => ({ id: s.id, text: subtitleText(s), original: s.original_text }));
       const { images, layout } = await renderSubtitleImages(items, project.video.width, project.video.height, style);
@@ -165,6 +172,19 @@ export default function EditorPage({ id, initial, health }) {
     exportVideo(formats, prefs.audio_format || 'mp3', style);
   }
 
+  async function applyTitle(title) {
+    const body = await actions.settings({ title });
+    if (body) setTitleDraft(null);
+    return body;
+  }
+
+  async function applyTitleAndExport(title) {
+    if (!(await applyTitle(title))) return;
+    const prefs = project.export_prefs || { formats: ['mp4', 'srt'], audio_format: 'mp3' };
+    const formats = prefs.formats.some((f) => f.startsWith('mp4')) ? prefs.formats : ['mp4', ...prefs.formats];
+    exportVideo(formats, prefs.audio_format || 'mp3', project.settings.subtitle_style, title);
+  }
+
   async function applyCover(cover) {
     const body = await actions.settings({ cover });
     if (body) setCoverDraft(null);
@@ -187,10 +207,10 @@ export default function EditorPage({ id, initial, health }) {
 
   const suggesting = suggestFor && sentences.find((s) => s.id === suggestFor);
   const query = search.trim().toLowerCase();
-  const shown = sentences.filter((s) => (filter === 'all' || ATTENTION.includes(s.status) || s.id === selectedId)
+  const shown = sentences.filter((s) => (filter === 'all' || toCheck(s) || s.id === selectedId)
     && (!query || s.khmer_text.toLowerCase().includes(query) || s.original_text.toLowerCase().includes(query)));
   const counts = project.counts;
-  const attention = sentences.filter((s) => ATTENTION.includes(s.status)).length;
+  const attention = sentences.filter(toCheck).length;
   const changed = (counts.edited || 0) + (counts.failed || 0);
   const { history } = project;
   const warningsKey = (project.warnings || []).join('|');
@@ -216,6 +236,9 @@ export default function EditorPage({ id, initial, health }) {
           {counts.too_long > 0 && (
             <button type="button" onClick={() => setFilter('attention')} title="Show the sentences to check"><Chip tone="amber">⚠ {counts.too_long} too long</Chip></button>
           )}
+          {counts.check_voice > 0 && (
+            <button type="button" onClick={() => setFilter('attention')} title="Voices that may have come out wrong, even after voicing them again"><Chip tone="amber">⚠ {counts.check_voice} check voice</Chip></button>
+          )}
           {changed > 0 && (
             <button type="button" onClick={() => setFilter('attention')} title="Show the sentences to check"><Chip tone="accent">{changed} need{changed === 1 ? 's' : ''} voice</Chip></button>
           )}
@@ -226,6 +249,10 @@ export default function EditorPage({ id, initial, health }) {
           <IconButton label={history.redo_label ? `Redo: ${history.redo_label} (Ctrl+Y)` : 'Nothing to redo'} disabled={locked || !history.redo} onClick={actions.redo}>
             <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5" /><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" /></svg>
           </IconButton>
+          <Button variant="soft" size="sm" disabled={locked || busy['#check'] || busy['*'] || !sentences.some((s) => s.audio_url)} onClick={actions.checkVoices}
+            title="Check every voice clip for mistakes (silent, cut off, skipped words, long pauses, other-language letters) and voice the wrong ones again">
+            {busy['#check'] ? 'Checking…' : 'Check voices'}
+          </Button>
           <Button variant="soft" size="sm" disabled={locked || !changed || busy['*']} onClick={actions.regenerateChanged} title="Make the voice of every sentence that changed">
             {busy['*'] ? 'Voicing…' : `Voice changed${changed ? ` (${changed})` : ''}`}
           </Button>
@@ -287,14 +314,15 @@ export default function EditorPage({ id, initial, health }) {
         <Panel className="order-1 overflow-hidden lg:order-2" bodyClassName="flex flex-col">
           <Player project={project} sentences={sentences} control={control} onTime={setTime} time={time}
             subtitleStyle={subtitleDraft} showSubtitles={showSubtitles} setShowSubtitles={setShowSubtitles}
-            numbers={numbers} onStep={go} cover={coverDraft} editingCover={editingCover} onCoverChange={setCoverDraft} />
+            numbers={numbers} onStep={go} cover={coverDraft} editingCover={editingCover} onCoverChange={setCoverDraft} title={titleDraft}
+            onSubtitleMove={tab === 'subtitles' && !locked ? (pos) => setSubtitleDraft((cur) => ({ ...(cur || project.settings.subtitle_style), ...pos })) : null} />
         </Panel>
 
         <Panel className="order-3" bodyClassName="flex flex-col">
           <div className="border-b border-line p-2">
             <Tabs value={tab} onChange={setTab} tabs={[
               { key: 'export', label: 'Export', dot: exporting },
-              { key: 'subtitles', label: 'Subtitles', dot: !!subtitleDraft || !!coverDraft },
+              { key: 'subtitles', label: 'Subtitles', dot: !!subtitleDraft || !!coverDraft || !!titleDraft },
               { key: 'audio', label: 'Audio', dot: project.separation?.state === 'running' },
             ]} />
           </div>
@@ -304,6 +332,8 @@ export default function EditorPage({ id, initial, health }) {
               <>
                 <SubtitlePanel saved={project.settings.subtitle_style} draft={subtitleDraft} setDraft={setSubtitleDraft} show={showSubtitles} setShow={setShowSubtitles}
                   locked={locked} onApply={applySubtitles} onApplyExport={applySubtitlesAndExport} />
+                <TitlePanel saved={project.settings.title || DEFAULT_TITLE} draft={titleDraft} setDraft={setTitleDraft}
+                  locked={locked} onApply={applyTitle} onApplyExport={applyTitleAndExport} />
                 <CoverPanel projectId={id} saved={project.settings.cover} draft={coverDraft} setDraft={setCoverDraft}
                   editing={editingCover} setEditing={setEditingCover} locked={locked} onApply={applyCover} onShowSpeech={showSpeech} />
               </>

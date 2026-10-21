@@ -76,12 +76,13 @@ def generate(pid: str, progress) -> None:
     if not todo:
         raise AppError("There are no Khmer lines to voice.", hint="Type the Khmer translation into at least one line.")
     shorten = translate.shorten if translate.provider() else None
+    respell = translate.respeller(source_language(project)) if translate.provider() else None
 
     progress.step("voice", "Generating the Khmer voice…")
     changes: dict[str, dict] = {}
     failed: dict[str, AppError] = {}
     with ThreadPoolExecutor(max_workers=max(1, config.TTS_WORKERS)) as pool:
-        futures = {pool.submit(fit.fit, folder, s, sentences.room_end(project, i), provider, shorten): s for i, s in todo}
+        futures = {pool.submit(fit.fit, folder, s, sentences.room_end(project, i), provider, shorten, respell): s for i, s in todo}
         for done, future in enumerate(as_completed(futures), 1):
             s = futures[future]
             try:
@@ -104,6 +105,10 @@ def generate(pid: str, progress) -> None:
             sentences.refresh(s)
 
     project = store.mutate(pid, apply)
+    respelled = sum(1 for c in changes.values() if "khmer_text" in c and not c.get("shortened"))
+    if respelled:
+        progress.warn(f"{respelled} line{'s had' if respelled != 1 else ' had'} words in other letters (Thai, Chinese…) that the Khmer voice skips — they were written in Khmer.")
+    _warn_voices(project["sentences"], progress)
     shortened = sum(1 for c in changes.values() if c.get("shortened"))
     if shortened:
         progress.warn(f"{shortened} line{'s were' if shortened != 1 else ' was'} shortened to fit the timing (marked in the editor).")
@@ -139,6 +144,7 @@ def _export(pid: str, progress) -> None:
             raise errors[0]  # the voice service is down: say so instead of exporting silence
         if errors:
             progress.warn(f"{len(errors)} sentence{'s' if len(errors) != 1 else ''} couldn't be voiced and will be silent: {errors[0].message}")
+        _warn_voices([s for s in project["sentences"] if s["id"] in {x["id"] for x in stale}], progress)
 
     # 2. The voice track, then each chosen file.
     progress.step("merge", "Building the Khmer voice track…")
@@ -198,6 +204,16 @@ def _export(pid: str, progress) -> None:
         p["step"] = "done"
 
     store.mutate(pid, finish)
+
+
+def source_language(project: dict) -> str | None:
+    return project["detected_lang"] if project["source_lang"] == "auto" else project["source_lang"]
+
+
+def _warn_voices(items: list[dict], progress) -> None:
+    flagged = sum(1 for s in items if s.get("voice_warning"))
+    if flagged:
+        progress.warn(f"{flagged} line{'s' if flagged != 1 else ''} may sound wrong even after voicing {'them' if flagged != 1 else 'it'} again — marked “Check voice” in the editor.")
 
 
 def _provider():

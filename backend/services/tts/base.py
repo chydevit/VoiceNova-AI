@@ -12,6 +12,7 @@ class TTSProvider:
         """(ready, reason it isn't)."""
         return True, ""
 
-    def synthesize(self, text: str, gender: str, speed: float, out: Path) -> Path:
-        """Write the spoken `text` to `out` (any audio format ffmpeg can read). Return the written path."""
+    def synthesize(self, text: str, gender: str, speed: float, out: Path, attempt: int = 0) -> Path:
+        """Write the spoken `text` to `out` (any audio format ffmpeg can read). Return the written path.
+        `attempt` counts the tries after a clip came out wrong; an engine that can, says it differently."""
         raise NotImplementedError

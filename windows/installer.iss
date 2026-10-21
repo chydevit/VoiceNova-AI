@@ -1,5 +1,5 @@
 ; Windows installer for Khmer Voice AI (Inno Setup 6). Built by .github/workflows/build-apps.yml:
-;   iscc /DAppVersion=1.1.0 /DSourceDir=<the assembled "Khmer Voice AI" folder> installer.iss
+;   iscc /DAppVersion=1.2.0 /DSourceDir=<the assembled "Khmer Voice AI" folder> installer.iss
 ; Installs for the current user only (no administrator needed). Projects and settings in
 ; %LOCALAPPDATA%\Khmer Voice AI are kept when the app is uninstalled.
 #ifndef AppVersion

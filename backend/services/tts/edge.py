@@ -22,7 +22,7 @@ class EdgeTTS(TTSProvider):
         except ImportError:
             return False, "edge-tts is not installed (pip install -r requirements.txt)"
 
-    def synthesize(self, text: str, gender: str, speed: float, out: Path) -> Path:
+    def synthesize(self, text: str, gender: str, speed: float, out: Path, attempt: int = 0) -> Path:
         import edge_tts
 
         mp3 = out.with_suffix(".mp3")

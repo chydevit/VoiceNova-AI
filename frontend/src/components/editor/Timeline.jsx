@@ -113,6 +113,15 @@ export default function Timeline({ project, sentences, videoRef, selectedId, onS
   const cutLive = useRef(null); // the same, for pointerup arriving before the last move is rendered
   const updateCut = (next) => { cutLive.current = next; setCutDrag(next); };
   const [picked, setPicked] = useState(null); // {lane, i}: the selected cut
+  const [activeLane, setActiveLane] = useState('background'); // the lane ✂ Split works on: the last one clicked
+  // Split points per lane (only marks where to divide a lane into pieces; kept in this browser).
+  const splitsKey = `kva-splits:${project.id}`;
+  const [splits, setSplits] = useState(() => {
+    try { return { video: [], background: [], ...JSON.parse(localStorage.getItem(splitsKey) || '{}') }; } catch { return { video: [], background: [] }; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(splitsKey, JSON.stringify(splits)); } catch { /* storage blocked: splits last until reload */ }
+  }, [splitsKey, splits]);
   const keepCenter = useRef(null);
 
   const scale = pps ?? Math.max(2, view.width / Math.min(duration, 40));
@@ -216,20 +225,37 @@ export default function Timeline({ project, sentences, videoRef, selectedId, onS
     setRange(null);
   };
   const updatePart = (lane, i, patch) => save(lane, saved(lane).map((c, k) => (k === i ? { ...c, ...patch } : c)));
+  // ✂ Split: divide a lane at the playhead; a click on a piece then selects it for cutting.
+  const splitHere = () => {
+    const t = round3(snap(videoRef.current?.currentTime ?? 0));
+    if (t < MIN_CUT || t > duration - MIN_CUT) return;
+    setSplits((all) => (all[activeLane].some((p) => Math.abs(p - t) < MIN_CUT) ? all
+      : { ...all, [activeLane]: [...all[activeLane], t].sort((a, b) => a - b) }));
+    setRange(null);
+  };
+  const removeSplit = (lane, t) => setSplits((all) => ({ ...all, [lane]: all[lane].filter((p) => p !== t) }));
+  const pieceAt = (lane, t) => {
+    if (!splits[lane].length) return null;
+    let start = 0;
+    let end = duration;
+    for (const p of splits[lane]) { if (p <= t) start = p; else { end = p; break; } }
+    return { lane, start, end };
+  };
   const restoreCut = (lane, i) => {
     save(lane, saved(lane).filter((_, k) => k !== i), lane === 'video' ? 'That part is back in the video.' : 'Background restored there.');
     setPicked(null);
   };
 
-  // Delete / Backspace / X cuts the selected range or restores the selected cut. Esc clears.
+  // Delete / Backspace / X cuts the selected range or restores the selected cut. S splits. Esc clears.
   const keys = useRef(null);
-  keys.current = { range, picked, cutRange, restoreCut };
+  keys.current = { range, picked, cutRange, restoreCut, splitHere };
   useEffect(() => {
     const onKey = (e) => {
       if (e.target.closest?.('input, textarea, select, dialog') || e.ctrlKey || e.metaKey) return;
       const k = keys.current;
       const key = e.key.toLowerCase();
       if (key === 'escape') { setRange(null); setPicked(null); return; }
+      if (key === 's' && !e.altKey) { e.preventDefault(); k.splitHere(); return; }
       if (!['delete', 'backspace', 'x'].includes(key)) return;
       if (k.range) { e.preventDefault(); k.cutRange(); } else if (k.picked) { e.preventDefault(); k.restoreCut(k.picked.lane, k.picked.i); }
     };
@@ -244,6 +270,7 @@ export default function Timeline({ project, sentences, videoRef, selectedId, onS
     e.stopPropagation();
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
+    setActiveLane(lane);
     updateCut({ lane, mode: 'select', x0: e.clientX, from: timeAt(e.clientX), moved: false, range: null, part });
   }
 
@@ -285,7 +312,8 @@ export default function Timeline({ project, sentences, videoRef, selectedId, onS
     if (d.mode === 'select') {
       if (!d.moved) {
         setRange(null);
-        if (d.part !== null) setPicked({ lane: d.lane, i: d.part }); else { setPicked(null); onSeek(d.from); }
+        if (d.part !== null) setPicked({ lane: d.lane, i: d.part });
+        else { setPicked(null); onSeek(d.from); setRange(pieceAt(d.lane, d.from)); } // split lane: select the piece clicked
       } else {
         setPicked(null);
         setRange(d.range.end - d.range.start < MIN_CUT ? null : d.range);
@@ -319,6 +347,13 @@ export default function Timeline({ project, sentences, videoRef, selectedId, onS
             <div className="absolute inset-y-0 -right-1 w-2 cursor-ew-resize hover:bg-accent/30" onPointerDown={(e) => startEdge(e, lane, i, 'end')} />
           </div>
         )))}
+        {splits[lane].filter((p) => p >= t0 && p <= t1).map((p) => (
+          <div key={p} className="absolute inset-y-0 z-[15] w-0.5 -translate-x-1/2 bg-white/85 shadow-[0_0_0_1px_rgb(0_0_0/0.35)]" style={{ left: p * scale }}>
+            <button type="button" title={`Split at ${formatTime(p)} · click to remove it`} aria-label="Remove this split"
+              onPointerDown={(e) => e.stopPropagation()} onClick={() => removeSplit(lane, p)}
+              className="absolute -top-px left-1/2 flex h-4 w-4 -translate-x-1/2 items-center justify-center rounded-b bg-white text-[9px] leading-none text-black shadow hover:bg-red-500 hover:text-white">✂</button>
+          </div>
+        ))}
         {range?.lane === lane && (
           <div className="pointer-events-none absolute inset-y-0 z-20 border-x-2 border-accent bg-accent/20" style={{ left: range.start * scale, width: Math.max(2, (range.end - range.start) * scale) }}>
             {!cutDrag && (
@@ -424,6 +459,7 @@ export default function Timeline({ project, sentences, videoRef, selectedId, onS
     const shown = drag?.sid === s.id ? { ...s, start: drag.start, end: drag.end } : s;
     const slot = shown.end - shown.start;
     const hasClip = s.status === 'ok' || s.status === 'too_long';
+    const suspect = hasClip && !!s.voice_warning; // the voice may have come out wrong
     const clip = hasClip ? s.audio_duration : 0;
     const overflow = Math.max(0, clip - slot);
     const selected = s.id === selectedId;
@@ -433,9 +469,9 @@ export default function Timeline({ project, sentences, videoRef, selectedId, onS
         role="button"
         tabIndex={-1}
         onPointerDown={(e) => startDrag(e, s, 'move')}
-        className={`absolute top-1.5 select-none rounded-md border ${BLOCK[s.status] || BLOCK.edited} ${selected ? 'z-10 ring-2 ring-accent' : ''} ${drag?.sid === s.id ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
+        className={`absolute top-1.5 select-none rounded-md border ${suspect ? BLOCK.too_long : BLOCK[s.status] || BLOCK.edited} ${selected ? 'z-10 ring-2 ring-accent' : ''} ${drag?.sid === s.id ? 'cursor-grabbing opacity-90' : 'cursor-grab'}`}
         style={{ left: shown.start * scale, width: Math.max(4, slot * scale), height: VOICE - 12 }}
-        title={`${formatTime(shown.start)}–${formatTime(shown.end)} · ${s.khmer_text || '(no text)'}`}
+        title={`${formatTime(shown.start)}–${formatTime(shown.end)} · ${s.khmer_text || '(no text)'}${suspect ? `\n⚠ ${s.voice_warning}` : ''}`}
       >
         {hasClip && <div className="pointer-events-none absolute inset-y-0 left-0 rounded-l-md bg-accent/30" style={{ width: Math.min(clip, slot) * scale }} />}
         {overflow > 0.05 && (
@@ -443,7 +479,7 @@ export default function Timeline({ project, sentences, videoRef, selectedId, onS
         )}
         {slot * scale > 26 && (
           <span className="khmer pointer-events-none relative block truncate px-1.5 pt-0.5 text-[11px] leading-[1.7] text-ink">
-            {s.status === 'too_long' && '⚠ '}{s.khmer_text || '…'}
+            {(s.status === 'too_long' || suspect) && '⚠ '}{s.khmer_text || '…'}
           </span>
         )}
         <div className="absolute inset-y-0 left-0 w-2 cursor-ew-resize rounded-l-md hover:bg-accent/30" onPointerDown={(e) => startDrag(e, s, 'start')} />
@@ -469,8 +505,16 @@ export default function Timeline({ project, sentences, videoRef, selectedId, onS
               onChange={(patch) => updatePart(picked.lane, picked.i, patch)} onRestore={() => restoreCut(picked.lane, picked.i)} onClose={() => setPicked(null)} />
           </div>
         )}
-        <span className="hidden text-xs text-faint lg:inline">Drag a clip to move it or its edges to retime it · double-click a gap to add a sentence · drag on Video to remove a part · drag on Background to change its volume</span>
-        <span className="ml-auto inline-flex overflow-hidden rounded-lg border border-line-strong text-muted">
+        <span className="hidden min-w-0 flex-1 truncate text-xs text-faint lg:inline" title="Drag a clip to move it or its edges to retime it · double-click a gap to add a sentence · to cut the Video or Background: ✂ Split at the playhead (S) and click a piece, or drag across a part">To cut: click Video or Background, ✂ Split at the playhead (S), click a piece, press Delete — or drag across a part · drag clips to retime</span>
+        <button type="button" onClick={splitHere} title={`Split the ${activeLane} at the playhead (S). Then click a piece and press Delete — click a lane first to choose it.`}
+          className="ml-auto inline-flex items-center gap-1 rounded-lg border border-line-strong px-2.5 py-1 font-medium text-ink hover:bg-raised">
+          ✂ Split <span className="text-muted">{activeLane === 'video' ? 'video' : 'background'}</span>
+        </button>
+        {splits[activeLane].length > 0 && (
+          <button type="button" className="text-xs text-muted underline hover:text-ink" title="Remove every split mark on this lane (cuts stay)"
+            onClick={() => { setSplits((all) => ({ ...all, [activeLane]: [] })); setRange(null); }}>clear splits</button>
+        )}
+        <span className="inline-flex overflow-hidden rounded-lg border border-line-strong text-muted">
           <button type="button" className="px-2.5 py-1 hover:bg-raised" onClick={() => zoom(1 / 1.6)} aria-label="Zoom out">−</button>
           <button type="button" className="border-x border-line-strong px-2.5 py-1 text-xs hover:bg-raised" onClick={() => { keepCenter.current = duration / 2; setPps(Math.max(1, view.width / duration)); }}>Whole video</button>
           <button type="button" className="px-2.5 py-1 hover:bg-raised" onClick={() => zoom(1.6)} aria-label="Zoom in">+</button>
@@ -479,8 +523,8 @@ export default function Timeline({ project, sentences, videoRef, selectedId, onS
       <div className="flex overflow-hidden rounded-lg border border-line bg-sunken">
         <div className="w-20 shrink-0 border-r border-line bg-raised text-[11px] font-medium text-muted">
           <div style={{ height: RULER }} />
-          <div className="flex flex-col justify-center px-2 leading-tight" style={{ height: VIDEO }} title="Drag here to select a part to remove from the video">
-            Video
+          <div className={`flex flex-col justify-center px-2 leading-tight ${activeLane === 'video' ? 'text-accent-ink' : ''}`} style={{ height: VIDEO }} title="Drag here to select a part to remove from the video">
+            <span className="truncate">Video</span>
             {saved('video').length > 0 && (
               <button type="button" className="w-fit whitespace-nowrap text-[10px] text-red-600 hover:text-accent-ink dark:text-red-400" title="Put every removed part back"
                 onClick={() => { save('video', [], 'Every removed part is back in the video.'); setPicked(null); }}>
@@ -490,7 +534,8 @@ export default function Timeline({ project, sentences, videoRef, selectedId, onS
           </div>
           <div className="flex items-center px-2 text-accent-ink" style={{ height: VOICE }}>Khmer voice</div>
           <div className="flex flex-col justify-center px-2 leading-tight" style={{ height: BACKGROUND }} title={`${voiceRemoved ? 'Music & sounds, with the original voice removed' : 'The original audio'} · drag here to select a part to silence`}>
-            Background<span className="text-faint">{level}{voiceRemoved && ' · no voice'}</span>
+            <span className={`truncate ${activeLane === 'background' ? 'text-accent-ink' : ''}`}>Background</span>
+            <span className="truncate text-faint">{level}{voiceRemoved && ' · no voice'}</span>
             {saved('background').length > 0 && (
               <button type="button" className="w-fit whitespace-nowrap text-[10px] text-faint hover:text-accent-ink" title="Put the background back to normal everywhere"
                 onClick={() => { save('background', [], 'Background restored everywhere.'); setPicked(null); }}>

@@ -77,5 +77,6 @@ MMS_MODEL = env("MMS_MODEL", "facebook/mms-tts-khm")
 MIN_SPEED, MAX_SPEED = 0.8, 1.3  # the per-sentence speed range
 MAX_FIT_SPEED = 1.3  # "Fix automatically" never speeds a clip up beyond this
 TTS_WORKERS = int(env("TTS_WORKERS", "4"))  # voice clips generated at the same time
+VOICE_RETRIES = int(env("VOICE_RETRIES", "2"))  # times a clip that came out wrong is voiced again (services/voicecheck.py)
 DUCK_VOLUME = float(env("DUCK_VOLUME", "0.15"))  # original audio level in "keep original quietly" mode
 DEMUCS_DEVICE = env("DEMUCS_DEVICE", "auto")  # auto | mps | cuda | cpu — where voice removal runs

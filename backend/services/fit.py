@@ -1,5 +1,6 @@
 """“Fix automatically” for a clip that is longer than its time slot. In order:
 
+  0. a line with words in another script (Thai, Chinese…, which the voice skips) is written in Khmer,
   1. let it use the pause after the sentence (up to the next sentence),
   2. speed it up, at most MAX_FIT_SPEED (1.3×),
   3. ask the translator for a shorter Khmer line (up to 2 tries), voice it, then speed up what's left.
@@ -13,13 +14,24 @@ from pathlib import Path
 import config
 import sentences
 from errors import AppError
-from services import clips
+from services import clips, voicecheck
 
 
-def fit(folder: Path, original: dict, room_end: float, provider, shorten=None) -> tuple[dict, list[str]]:
+def fit(folder: Path, original: dict, room_end: float, provider, shorten=None, respell=None, force: bool = False) -> tuple[dict, list[str]]:
+    """`force` voices the line again even if its clip is cached (a clip that may be wrong)."""
     s = dict(original)
     notes: list[str] = []
-    s.update(clips.ensure(folder, s, provider))
+    if respell and voicecheck.unreadable(s["khmer_text"]):
+        try:
+            better = sentences.clean(respell(s) or "")
+        except AppError:
+            better = ""  # translator unavailable: the line keeps its warning
+        if better and not voicecheck.unreadable(better):
+            s["khmer_text"], s["shortened"] = better, False
+            notes.append("wrote the words in other letters in Khmer")
+    s.update(clips.ensure(folder, s, provider, force))
+    if force:
+        notes.append("voiced it again" + (", but it may still sound wrong" if s.get("voice_warning") else ""))
     if _fits(s):
         return _changes(original, s), notes
 

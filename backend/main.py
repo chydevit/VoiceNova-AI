@@ -133,9 +133,19 @@ app.include_router(api_editor.router)
 app.include_router(api_settings.router)
 
 
+class FrontendFiles(StaticFiles):
+    """The page itself is always checked for a newer build (the Mac app's WebKit would otherwise keep
+    showing an old one); the files in assets/ have the build's hash in their name, so they never change."""
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if path.startswith("assets/") else "no-cache"
+        return response
+
+
 # The built React app (npm run build) is served from here; during development Vite serves it instead.
 if config.FRONTEND_DIST.exists():
-    app.mount("/", StaticFiles(directory=config.FRONTEND_DIST, html=True), name="frontend")
+    app.mount("/", FrontendFiles(directory=config.FRONTEND_DIST, html=True), name="frontend")
 
 
 if __name__ == "__main__":

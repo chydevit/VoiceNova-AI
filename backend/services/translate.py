@@ -14,6 +14,7 @@ import httpx
 
 import config
 from errors import AppError
+from services import voicecheck
 
 SCHEMA = {
     "type": "object",
@@ -141,13 +142,12 @@ def _translate_chunk(chunk: list[dict], before: list[dict], after: list[dict], s
 
 
 KHMER_SCRIPT = re.compile(r"[\u1780-\u17ff\u19e0-\u19ff]")
-# Thai, Lao, Burmese, Japanese kana, Chinese, Korean, Cyrillic, Arabic, Devanagari
-OTHER_SCRIPTS = re.compile(r"[\u0e00-\u0eff\u1000-\u109f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\u0400-\u04ff\u0600-\u06ff\u0900-\u097f]")
 
 
 def is_khmer(text: str) -> bool:
-    """A usable Khmer line: no other script, and Khmer letters unless it is just a name or two (“Cursor”)."""
-    if not text or OTHER_SCRIPTS.search(text):
+    """A usable Khmer line: no letters of another script than Khmer or Latin (Thai, Chinese… which a
+    Khmer voice skips), and Khmer letters unless it is just a name or two (“Cursor”)."""
+    if not text or voicecheck.unreadable(text):
         return False
     return bool(KHMER_SCRIPT.search(text)) or len(text.split()) <= 3
 
@@ -165,6 +165,36 @@ def shorten(source_text: str, khmer: str, seconds: float, max_chars: int) -> str
     lines = data.get("lines") or []
     text = _clean(lines[0].get("text", "")) if lines else ""
     return text if is_khmer(text) else None
+
+
+def retranslate(lines: list[dict], source_lang: str | None) -> dict[str, str]:
+    """Translate again the lines whose Khmer has words in another script (Thai, Lao, Chinese…), which a
+    Khmer voice skips. `lines`: [{id, text, room, khmer}], text = the original. Batches run in parallel.
+    Returns {id: Khmer} for the lines that came back in Khmer letters only; a failed batch is left out."""
+    src = LANG_NAMES.get(source_lang or "", "the original language")
+
+    def batch(chunk: list[dict]) -> dict[str, str]:
+        bad = "; ".join(f'[{i + 1}] {json.dumps(voicecheck.unreadable(l["khmer"]), ensure_ascii=False)}' for i, l in enumerate(chunk))
+        note = ("IMPORTANT: earlier answers for these lines mixed in words in other scripts, which a Khmer voice can't read: "
+                f"{bad}. Write every line entirely in Khmer script (អក្សរខ្មែរ) — translate those words too.")
+        return _translate_chunk([{**l, "text": l["text"] or l["khmer"]} for l in chunk], [], [], src, note)
+
+    result: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=max(1, config.TRANSLATE_WORKERS)) as pool:
+        for future in as_completed([pool.submit(batch, lines[i:i + CHUNK]) for i in range(0, len(lines), CHUNK)]):
+            try:
+                result.update(future.result())
+            except AppError as err:
+                log.warning("re-translating lines with other letters failed: %s", err.message)
+    return result
+
+
+def respeller(source_lang: str | None):
+    """For services/fit.py: sentence → its Khmer again in Khmer letters only, or None."""
+    def respell(s: dict) -> str | None:
+        line = {"id": s["id"], "text": s["original_text"], "room": s["end"] - s["start"], "khmer": s["khmer_text"]}
+        return retranslate([line], source_lang).get(s["id"])
+    return respell
 
 
 SUGGEST_STYLES = (

@@ -34,6 +34,7 @@ def make(sid: str, start: float, end: float, original_text: str = "", khmer_text
         "audio_duration": None,
         "status": "edited",  # ok | too_long | edited (needs a new clip) | regenerating | failed | empty
         "shortened": False,
+        "voice_warning": None,  # set when the clip may be wrong even after voicing it again (services/voicecheck.py)
         "error": None,
     }
     s.update(extra)
@@ -61,6 +62,8 @@ def has_clip(s: dict) -> bool:
 
 
 def refresh(s: dict) -> dict:
+    if s.get("voice_warning") and not has_clip(s):
+        s["voice_warning"] = None  # it was about the old clip
     if not s["khmer_text"]:
         s["status"] = "empty"
     elif s.get("error"):

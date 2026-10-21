@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { formatTime } from '../../api.js';
-import { drawSubtitle, loadSubtitleFont } from '../../lib/subtitleImages.js';
+import { drawSubtitle, drawTitle, loadSubtitleFont } from '../../lib/subtitleImages.js';
 import { IconButton } from '../ui.jsx';
 import { gainAt } from '../../lib/background.js';
 
@@ -94,12 +94,50 @@ function CoverBox({ cover, box, editing, onChange }) {
   );
 }
 
+const SAMPLE = { id: 'sample', text: 'ឧទាហរណ៍អក្សររត់ · sample subtitle', original: 'Original line' }; // shown while styling, when no sentence is on screen
+
+// The box around the subtitle on the preview while styling it: drag it to move the subtitle.
+// Snaps to the middle. `onMove({x, margin})` gets the new position (% of the picture).
+function SubtitleHandle({ bounds, box, picture, style, onMove }) {
+  const drag = useRef(null);
+  if (!bounds) return null;
+  const k = box.width / picture.width;
+  const start = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current = { x0: e.clientX, y0: e.clientY, x: style.x ?? 50, margin: style.margin, top: style.position === 'top' };
+  };
+  const move = (e) => {
+    const d = drag.current;
+    if (!d) return;
+    const dx = ((e.clientX - d.x0) / box.width) * 100;
+    const dy = ((e.clientY - d.y0) / box.height) * 100;
+    let x = clamp(d.x + dx, 0, 100);
+    if (Math.abs(x - 50) < 1.5) x = 50;
+    const margin = clamp(d.top ? d.margin + dy : d.margin - dy, 0, 95);
+    onMove({ x: Math.round(x * 2) / 2, margin: Math.round(margin * 2) / 2 });
+  };
+  return (
+    <div role="button" tabIndex={-1} title="Drag to move the subtitle"
+      onPointerDown={start} onPointerMove={move} onPointerUp={() => { drag.current = null; }} onPointerCancel={() => { drag.current = null; }}
+      className="absolute cursor-move rounded outline-2 outline-dashed outline-accent hover:bg-white/10"
+      style={{ left: box.left + bounds.left * k, top: box.top + bounds.top * k, width: bounds.width * k, height: bounds.height * k }}>
+      <span className="pointer-events-none absolute -top-6 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-accent px-1.5 py-0.5 text-[10px] font-semibold text-white shadow">✥ drag</span>
+    </div>
+  );
+}
+
 // The video with the Khmer voice playing over it. `control` (from EditorPage) holds the
 // <video> ref, the VoicePreview and an optional time to pause at (for ▶ on one sentence).
-export default function Player({ project, sentences, control, onTime, time, subtitleStyle, showSubtitles, setShowSubtitles, numbers, onStep, cover, editingCover, onCoverChange }) {
+export default function Player({ project, sentences, control, onTime, time, subtitleStyle, showSubtitles, setShowSubtitles, numbers, onStep, cover, editingCover, onCoverChange, title, onSubtitleMove }) {
   const style = subtitleStyle || project.settings.subtitle_style;
-  const latest = useRef({ sentences, project, style, showSubtitles });
-  latest.current = { sentences, project, style, showSubtitles };
+  const shownTitle = title || project.settings.title;
+  const titleCanvas = useRef(null);
+  const styling = !!onSubtitleMove; // the Subtitles tab is open: show a sample line and let it be dragged
+  const latest = useRef({ sentences, project, style, showSubtitles, styling });
+  latest.current = { sentences, project, style, showSubtitles, styling };
+  const [subBounds, setSubBounds] = useState(null);
   const music = useRef(null);
   const subs = useRef(null);
   const drawn = useRef('');
@@ -109,7 +147,11 @@ export default function Player({ project, sentences, control, onTime, time, subt
   const stage = useRef(null);
   const { width, height, duration } = project.video;
 
-  useEffect(() => { loadSubtitleFont().then(() => setFontReady(true)); }, []);
+  useEffect(() => {
+    let live = true;
+    loadSubtitleFont(style).then(() => { if (live) setFontReady(style.font || true); });
+    return () => { live = false; };
+  }, [style.font]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep the subtitle canvas exactly over the picture.
   useEffect(() => {
@@ -131,12 +173,12 @@ export default function Player({ project, sentences, control, onTime, time, subt
     const caption = (t) => {
       const c = subs.current;
       if (!c) return;
-      const { sentences: items, style: st, showSubtitles: on } = latest.current;
-      const item = on ? subtitleAt(items, duration, t) : null;
+      const { sentences: items, style: st, showSubtitles: on, styling: sample } = latest.current;
+      const item = on ? subtitleAt(items, duration, t) || (sample ? SAMPLE : null) : null;
       const key = item ? `${item.id}|${item.text}|${item.original}|${JSON.stringify(st)}` : '';
       if (key === drawn.current) return;
       drawn.current = key;
-      drawSubtitle(c.getContext('2d'), item, c.width, c.height, st);
+      setSubBounds(drawSubtitle(c.getContext('2d'), item, c.width, c.height, st));
     };
     control.redrawSubtitle = () => { drawn.current = '#'; caption(v.currentTime); };
     const follow = () => { // keep the music track on the video's clock
@@ -194,7 +236,11 @@ export default function Player({ project, sentences, control, onTime, time, subt
   }, [video, preview, stopAt, onTime, control, duration]);
 
   // Redraw when the style, the text or the toggle changes (also while paused).
-  useEffect(() => { control.redrawSubtitle?.(); }, [control, style, sentences, showSubtitles, fontReady, box]);
+  useEffect(() => { control.redrawSubtitle?.(); }, [control, style, sentences, showSubtitles, fontReady, box, styling]);
+  useEffect(() => {
+    const c = titleCanvas.current;
+    if (c) drawTitle(c.getContext('2d'), shownTitle, c.width, c.height);
+  }, [shownTitle, fontReady, box]);
 
   const { settings } = project;
   const separate = settings.background === 'separate';
@@ -224,8 +270,15 @@ export default function Player({ project, sentences, control, onTime, time, subt
         <video ref={video} src={project.source_url} playsInline preload="auto" onClick={toggle} className="absolute inset-0 h-full w-full cursor-pointer" />
         {box && <CoverBox cover={cover || project.settings.cover} box={box} editing={editingCover} onChange={onCoverChange} />}
         {box && (
+          <canvas ref={titleCanvas} width={width} height={height} aria-hidden="true" className="pointer-events-none absolute"
+            style={{ left: box.left, top: box.top, width: box.width, height: box.height }} />
+        )}
+        {box && (
           <canvas ref={subs} width={width} height={height} aria-hidden="true" className="pointer-events-none absolute"
             style={{ left: box.left, top: box.top, width: box.width, height: box.height }} />
+        )}
+        {box && styling && showSubtitles && !playing && (
+          <SubtitleHandle bounds={subBounds} box={box} picture={{ width, height }} style={style} onMove={onSubtitleMove} />
         )}
         {inRemoved && !playing && (
           <span className="pointer-events-none absolute left-3 top-3 rounded-md bg-red-600 px-2 py-1 text-xs font-semibold text-white shadow">✂ Removed from the video</span>

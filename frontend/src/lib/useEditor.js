@@ -118,6 +118,12 @@ export function useEditor(id, initial) {
     regenerateChanged: () => action(() => api.regenerateChanged(id), { sid: '*', kind: 'regenerate' },
       (b) => say(b.voiced ? `Voiced ${b.voiced} sentence${b.voiced === 1 ? '' : 's'}${b.failed ? ` · ${b.failed} failed` : ''}.` : 'Every sentence already has its voice.')),
     fix: (sid) => action(() => api.fix(id, sid), { sid, kind: 'fix' }, (b) => say(b.note)),
+    checkVoices: () => action(() => api.checkVoices(id), { sid: '#check', kind: 'check' }, (b) => {
+      const still = b.project.counts.check_voice || 0;
+      if (!b.wrong) return say(`Checked ${b.checked} voice${b.checked === 1 ? '' : 's'} — they all sound right.`);
+      const done = [b.voiced && `voiced ${b.voiced} again`, b.rewritten && `wrote ${b.rewritten} in Khmer letters and voiced ${b.rewritten === 1 ? 'it' : 'them'}`].filter(Boolean);
+      say(`${b.wrong} voice${b.wrong === 1 ? '' : 's'} came out wrong${done.length ? `: ${done.join(', ')}` : ''}${still ? ` · ${still} still to check (⚠ Check voice)` : ''}.`);
+    }),
     split: (sid, body) => action(() => api.split(id, sid, body), { sid, kind: 'split' }),
     merge: (sid) => action(() => api.merge(id, sid), { sid, kind: 'merge' }),
     add: (body) => action(() => api.add(id, body)),

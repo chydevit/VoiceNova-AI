@@ -11,6 +11,7 @@ const STATUS = {
   regenerating: { text: 'Voicing…', tone: 'accent', dot: 'bg-accent animate-pulse' },
   failed: { text: 'Voice failed', tone: 'red', dot: 'bg-red-500' },
   empty: { text: 'No text', tone: 'slate', dot: 'bg-faint' },
+  check: { text: '⚠ Check voice', tone: 'amber', dot: 'bg-amber-500' },
 };
 
 // A slider that shows its value at once and saves it once the user stops moving it.
@@ -61,7 +62,9 @@ function SentenceRow({ s, number, isLast, voices, provider, selected, playing, b
   const long = s.khmer_text.length > limit * 1.3;
   const separateSubtitle = s.subtitle_text !== null && s.subtitle_text !== undefined;
   const disabled = locked || !!busy;
-  const status = busy === 'regenerate' ? STATUS.regenerating : STATUS[s.status] || STATUS.edited;
+  // the voice may have come out wrong even after voicing it again (silent, cut off, skipped words…)
+  const suspect = !!s.voice_warning && (s.status === 'ok' || s.status === 'too_long');
+  const status = busy === 'regenerate' ? STATUS.regenerating : suspect && s.status === 'ok' ? STATUS.check : STATUS[s.status] || STATUS.edited;
 
   // Voice and speed changes need a new clip: make it right away (speed changes don't even need the internet).
   const change = async (fields) => {
@@ -86,6 +89,7 @@ function SentenceRow({ s, number, isLast, voices, provider, selected, playing, b
             <p className="flex items-center gap-1.5 font-mono text-[11px] text-faint">
               {formatTime(s.start)} · {slot.toFixed(1)}s
               {s.status === 'too_long' && <span className="font-sans font-semibold text-amber-600 dark:text-amber-400">too long</span>}
+              {suspect && <span className="font-sans font-semibold text-amber-600 dark:text-amber-400">check voice</span>}
               {s.shortened && <span className="font-sans text-sky-600 dark:text-sky-400">shortened</span>}
               {removed && <span className="font-sans font-semibold text-red-600 dark:text-red-400">✂ removed</span>}
             </p>
@@ -106,7 +110,7 @@ function SentenceRow({ s, number, isLast, voices, provider, selected, playing, b
         {removed && <Chip tone="red" title="This sentence is inside a part removed from the video, so it's left out of the export">✂ removed</Chip>}
         <span className="ml-auto flex items-center">
           <IconButton label="Play" onClick={() => onPlay(s)}><Icon d={ICONS.play} /></IconButton>
-          <IconButton label="Regenerate the voice" active={s.status === 'edited' || s.status === 'failed'} disabled={disabled || !s.khmer_text}
+          <IconButton label="Regenerate the voice" active={s.status === 'edited' || s.status === 'failed' || suspect} disabled={disabled || !s.khmer_text}
             onClick={() => actions.regenerate(s.id, s.status === 'ok' || s.status === 'too_long')}><Icon d={ICONS.regenerate} /></IconButton>
           <IconButton label="Split at the cursor" disabled={disabled || s.khmer_text.length < 2}
             onClick={() => actions.split(s.id, { index: splitPoint(s.khmer_text, caret.current) })}><Icon d={ICONS.split} /></IconButton>
@@ -148,7 +152,7 @@ function SentenceRow({ s, number, isLast, voices, provider, selected, playing, b
         <span className={`tabular-nums ${long ? 'font-semibold text-amber-700 dark:text-amber-300' : 'text-faint'}`} title="Characters / what fits comfortably in this time">
           {s.khmer_text.length}/{limit}
         </span>
-        {s.status === 'too_long' && (
+        {s.status === 'too_long' && !suspect && (
           <button type="button" disabled={disabled} onClick={() => actions.fix(s.id)}
             className="rounded-md bg-amber-500 px-2 py-0.5 font-semibold text-white hover:bg-amber-600 disabled:opacity-50">
             {busy === 'fix' ? 'Fixing…' : '⚡ Fix automatically'}
@@ -159,6 +163,22 @@ function SentenceRow({ s, number, isLast, voices, provider, selected, playing, b
         </button>
       </div>
       {s.error && <p className="mt-1 text-xs text-red-700 dark:text-red-300">{s.error}</p>}
+      {suspect && (
+        <div className="mt-1.5 rounded-lg bg-amber-500/10 p-2 text-xs text-amber-900 dark:text-amber-100">
+          <p><span className="font-semibold">⚠ This voice may be wrong.</span> {s.voice_warning}</p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            <button type="button" disabled={disabled} onClick={() => actions.fix(s.id)}
+              title="Write words in other letters in Khmer, voice it again and fit it to its time"
+              className="rounded-md bg-amber-500 px-2 py-0.5 font-semibold text-white hover:bg-amber-600 disabled:opacity-50">
+              {busy === 'fix' ? 'Fixing…' : '⚡ Fix automatically'}
+            </button>
+            <button type="button" disabled={disabled} onClick={() => actions.regenerate(s.id, true)}
+              className="rounded-md bg-panel px-2 py-0.5 font-semibold shadow-sm hover:bg-amber-500/10 disabled:opacity-50">
+              {busy === 'regenerate' ? 'Voicing…' : '↻ Voice again'}
+            </button>
+          </div>
+        </div>
+      )}
 
       <label className="mt-2.5 inline-flex items-center gap-2 text-xs text-muted">
         <input type="checkbox" checked={!separateSubtitle} disabled={locked}
