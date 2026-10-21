@@ -85,7 +85,7 @@ jobs:
             build/*.zip
 
   mac:
-    runs-on: macos-14  # Apple silicon; the Intel version is cross-built here and tested with Rosetta
+    runs-on: macos-26  # Apple silicon, same SDK as the app is written for; the Intel version is cross-built here and tested with Rosetta
     strategy:
       fail-fast: false
       matrix:
