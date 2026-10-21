@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+/* Dark mode follows a class on <html> (set before first paint in index.html, toggled in the header). */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Kantumruy Pro", "Noto Sans Khmer", ui-sans-serif, system-ui, sans-serif;
+}
+
+/* Semantic colours: components use bg-panel, text-muted, border-line … and both themes just work. */
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-sunken: var(--sunken);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+}
+
+:root {
+  --canvas: #f3f4f8;
+  --panel: #ffffff;
+  --raised: #f1f3f8;
+  --sunken: #e8ebf2;
+  --line: #e1e5ee;
+  --line-strong: #c9d0dd;
+  --ink: #141824;
+  --muted: #5a6477;
+  --faint: #8a93a6;
+  --accent: #5b4cf0;
+  --accent-hover: #4a3bdc;
+  --accent-soft: #eeecfe;
+  --accent-ink: #4636d1;
+  color-scheme: light;
+}
+
+:root.dark {
+  --canvas: #0a0c11;
+  --panel: #12151c;
+  --raised: #1a1e27;
+  --sunken: #0d1015;
+  --line: #232835;
+  --line-strong: #323948;
+  --ink: #e9ecf3;
+  --muted: #9aa3b6;
+  --faint: #677085;
+  --accent: #7867ff;
+  --accent-hover: #8b7dff;
+  --accent-soft: rgb(120 103 255 / 0.15);
+  --accent-ink: #b4abff;
+  color-scheme: dark;
+}
+
+body {
+  @apply bg-canvas text-ink antialiased;
+}
+
+/* Khmer stacks consonants above and below the line, so it needs extra line height. */
+.khmer {
+  line-height: 1.85;
+}
+
+input[type="range"],
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+/* Fieldsets refuse to shrink below their content by default, which breaks narrow layouts. */
+fieldset {
+  min-width: 0;
+}
+
+/* Quiet scrollbars inside the studio panels. */
+.scroll-quiet {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+/* Time boxes: no spin arrows (WebKit draws them inside the field). */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}

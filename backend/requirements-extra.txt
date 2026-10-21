@@ -1,0 +1,7 @@
+# Optional, large (installs PyTorch, ~1–2 GB):
+#   demucs        → “Remove the original voice, keep music & sounds” (uses the Apple/NVIDIA GPU when there is one)
+#   transformers  → TTS_PROVIDER=mms (Meta MMS-TTS Khmer voice, works offline)
+torch>=2.2
+torchaudio>=2.2
+demucs>=4.0
+transformers>=4.40
