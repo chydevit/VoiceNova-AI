@@ -18,6 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 import api_editor
 import api_projects
+import api_settings
 import config
 import store
 from errors import AppError
@@ -111,6 +112,7 @@ def health():
 
 app.include_router(api_projects.router)
 app.include_router(api_editor.router)
+app.include_router(api_settings.router)
 
 
 # The built React app (npm run build) is served from here; during development Vite serves it instead.

@@ -2,16 +2,18 @@ import { useEffect, useState } from 'react';
 import { api } from './api.js';
 import ProjectPage from './components/ProjectPage.jsx';
 import ProjectsPage from './components/ProjectsPage.jsx';
+import SettingsPage from './components/SettingsPage.jsx';
 import { IconButton, Notice } from './components/ui.jsx';
 import UploadZone from './components/UploadZone.jsx';
 import { setTheme, useTheme } from './lib/theme.js';
 
-// Pages: #/ upload · #/projects My projects · #/p/<id> one project (progress, review or editor).
+// Pages: #/ upload · #/projects My projects · #/settings · #/p/<id> one project (progress, review or editor).
 function route() {
   const hash = window.location.hash;
   const id = hash.match(/^#\/p\/([A-Za-z0-9]+)/)?.[1];
   if (id) return { page: 'project', id };
   if (hash.startsWith('#/projects')) return { page: 'projects' };
+  if (hash.startsWith('#/settings')) return { page: 'settings' };
   return { page: 'home' };
 }
 
@@ -27,9 +29,12 @@ function SetupWarnings({ health }) {
   }
   if (!problems.length) return null;
   return (
-    <Notice>
-      <p className="font-semibold">Setup needed</p>
-      <ul className="mt-1 list-disc pl-5">{problems.map((p) => <li key={p}>{p}</li>)}</ul>
+    <Notice className="flex flex-wrap items-start gap-3">
+      <div className="min-w-0 flex-1">
+        <p className="font-semibold">Setup needed</p>
+        <ul className="mt-1 list-disc pl-5">{problems.map((p) => <li key={p}>{p}</li>)}</ul>
+      </div>
+      <a href="#/settings" className="shrink-0 rounded-lg bg-amber-500 px-3 py-1.5 text-sm font-semibold text-white hover:bg-amber-600">Open Settings</a>
     </Notice>
   );
 }
@@ -64,9 +69,8 @@ export default function App() {
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
 
-  useEffect(() => {
-    api.health().then(setHealth).catch(() => setHealth({ offline: true }));
-  }, []);
+  const loadHealth = () => api.health().then(setHealth).catch(() => setHealth({ offline: true }));
+  useEffect(() => { loadHealth(); }, []);
 
   const nav = (page) => `rounded-lg px-2.5 py-1.5 text-sm font-medium whitespace-nowrap transition ${where.page === page ? 'bg-accent-soft text-accent-ink' : 'text-muted hover:bg-raised hover:text-ink'}`;
 
@@ -85,6 +89,10 @@ export default function App() {
             {health?.tts?.label && <span className="mr-2 hidden text-xs text-faint xl:block">Voice: {health.tts.label}</span>}
             <a href="#/projects" className={nav('projects')}>My projects</a>
             <a href="#" className={nav('home')}>New video</a>
+            <a href="#/settings" title="Settings — API keys and voices" aria-label="Settings"
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${where.page === 'settings' ? 'bg-accent-soft text-accent-ink' : 'text-muted hover:bg-raised hover:text-ink'}`}>
+              <svg viewBox="0 0 24 24" className="h-4.5 w-4.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" /></svg>
+            </a>
             <ThemeToggle />
           </nav>
         </div>
@@ -97,8 +105,9 @@ export default function App() {
         </main>
       ) : (
         <main className="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:py-10">
-          <SetupWarnings health={health} />
+          {where.page !== 'settings' && <SetupWarnings health={health} />}
           {where.page === 'projects' && <ProjectsPage />}
+          {where.page === 'settings' && <SettingsPage onSaved={loadHealth} />}
           {where.page === 'home' && (
             <div className="mx-auto max-w-3xl space-y-8">
               <div className="text-center">

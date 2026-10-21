@@ -69,7 +69,7 @@ def status() -> dict:
         model = {"anthropic": config.ANTHROPIC_MODEL, "gemini": config.GEMINI_MODEL, "openai": config.OPENAI_MODEL}[name]
         return {"provider": name, "model": model, "ok": True, "reason": ""}
     wanted = config.TRANSLATE_PROVIDER
-    reason = f"TRANSLATE_PROVIDER={wanted} but its API key is empty" if wanted != "auto" else "Add ANTHROPIC_API_KEY, GEMINI_API_KEY or OPENAI_API_KEY to backend/.env"
+    reason = f"{wanted} is chosen but its API key is empty — add it in Settings" if wanted != "auto" else "add a Gemini, Claude or OpenAI API key in Settings"
     return {"provider": None, "ok": False, "reason": reason}
 
 

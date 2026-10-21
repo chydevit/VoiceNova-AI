@@ -1,8 +1,13 @@
 // Khmer Voice AI — the Mac app.
 //
 // Starts the Python server (backend/main.py) in the background and shows the app in a native
-// window (WebKit). Quitting the app stops the server. Built by desktop/build_mac_app.sh, which
-// writes the backend folder (and an optional API-keys file) into the app's Info.plist.
+// window (WebKit). Quitting the app stops the server. Built by desktop/build_mac_app.sh.
+//
+// Two ways to run:
+//   project – Info.plist names a project folder (KVABackend): runs its backend/.venv (for development)
+//   bundled – the app carries the backend itself (release builds). The first launch makes a Python
+//             environment in ~/Library/Application Support/Khmer Voice AI, where projects and
+//             settings (API keys) live too.
 import AppKit
 import WebKit
 
@@ -16,10 +21,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     private var quitting = false
     private var quitConfirmed = false
     private var downloads: [ObjectIdentifier: URL] = [:]
+    private var justSetUp = false
 
     private let info = Bundle.main.infoDictionary ?? [:]
-    private var backend: URL { URL(fileURLWithPath: info["KVABackend"] as? String ?? "") }
+    private let env = ProcessInfo.processInfo.environment
     private var base: URL { URL(string: "http://127.0.0.1:\(port)/")! }
+
+    /// The project folder's backend, when this build points at one that exists.
+    private var projectBackend: URL? {
+        guard let path = info["KVABackend"] as? String, !path.isEmpty,
+              FileManager.default.fileExists(atPath: path + "/main.py") else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+    private var backend: URL { projectBackend ?? Bundle.main.resourceURL!.appendingPathComponent("backend") }
+    /// Bundled mode keeps its Python environment, projects and settings here.
+    private var support: URL {
+        if let dir = env["KVA_SUPPORT_DIR"], !dir.isEmpty { return URL(fileURLWithPath: dir) } // for testing
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Khmer Voice AI")
+    }
+    private var python: URL {
+        projectBackend.map { $0.appendingPathComponent(".venv/bin/python") } ?? support.appendingPathComponent("venv/bin/python")
+    }
+    private var dataFolder: URL { projectBackend.map { $0.appendingPathComponent("data/projects") } ?? support.appendingPathComponent("data/projects") }
     private let logURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Logs/Khmer Voice AI/server.log")
 
@@ -100,6 +124,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     // MARK: - Server
 
     private func startServer() {
+        if let forced = env["KVA_PORT"].flatMap(Int.init) { // for testing: always start our own, on this port
+            port = forced
+            return prepareThenLaunch()
+        }
         // A Khmer Voice AI server already running on 8000 (started by hand)? Use it.
         isOurServer(URL(string: "http://127.0.0.1:8000/api/health")!) { running in
             if running {
@@ -107,13 +135,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
                 self.waitForServer(deadline: Date().addingTimeInterval(5))
             } else {
                 self.port = Self.freePort(from: 8000)
-                self.launchServer()
+                self.prepareThenLaunch()
             }
         }
     }
 
+    private func prepareThenLaunch() {
+        if projectBackend != nil || environmentIsReady() { return launchServer() }
+        setUpEnvironment()
+    }
+
     private func launchServer() {
-        let python = backend.appendingPathComponent(".venv/bin/python")
         guard FileManager.default.isExecutableFile(atPath: python.path) else {
             show("The Python environment wasn't found at\n\(python.path)\n\nSet up the backend as the README explains, then build the app again.", busy: false)
             return
@@ -122,7 +154,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         process.executableURL = python
         process.arguments = ["main.py"]
         process.currentDirectoryURL = backend
-        var env = ProcessInfo.processInfo.environment
+        var env = self.env
         env["PORT"] = String(port)
         env["HOST"] = "127.0.0.1"
         env["PYTHONUNBUFFERED"] = "1"
@@ -132,12 +164,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         if let keys = info["KVAKeysFile"] as? String, !keys.isEmpty, env["KEYS_FILE"] == nil {
             env["KEYS_FILE"] = keys
         }
+        if projectBackend == nil { // bundled: everything the user makes lives in Application Support
+            env["DATA_DIR"] = support.appendingPathComponent("data").path
+            env["ENV_FILE"] = support.appendingPathComponent("settings.env").path
+            env["PYTHONDONTWRITEBYTECODE"] = "1" // never write into the app bundle
+        }
         process.environment = env
 
         try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: logURL.path, contents: Data("— Khmer Voice AI started \(Date()) on port \(port) —\n".utf8))
+        // Start a fresh log each launch, but keep it when first-launch setup just wrote to it.
+        if projectBackend != nil || !FileManager.default.fileExists(atPath: logURL.path) || environmentIsReady() && !justSetUp {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        }
         if let log = try? FileHandle(forWritingTo: logURL) {
             log.seekToEndOfFile()
+            log.write(Data("— Khmer Voice AI started \(Date()) on port \(port) —\n".utf8))
             process.standardOutput = log
             process.standardError = log
         }
@@ -154,6 +195,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         } catch {
             show("Couldn't start the server: \(error.localizedDescription)", busy: false)
         }
+    }
+
+    // MARK: - First launch (bundled mode): a Python environment with the backend's packages
+
+    private var requirements: URL { backend.appendingPathComponent("requirements.txt") }
+    private var marker: URL { support.appendingPathComponent("venv/.installed-requirements") }
+
+    /// Ready when the environment exists and was made for these exact requirements.
+    private func environmentIsReady() -> Bool {
+        FileManager.default.isExecutableFile(atPath: python.path)
+            && (try? String(contentsOf: marker, encoding: .utf8)) == (try? String(contentsOf: requirements, encoding: .utf8))
+    }
+
+    /// The newest Python 3.10+ on this Mac (python.org, Homebrew or the Xcode tools).
+    private func findPython() -> URL? {
+        let candidates = ["3.14", "3.13", "3.12", "3.11", "3.10"].flatMap { v in
+            ["/Library/Frameworks/Python.framework/Versions/\(v)/bin/python\(v)", "/opt/homebrew/bin/python\(v)", "/usr/local/bin/python\(v)"]
+        } + ["/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3"]
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            let check = Process()
+            check.executableURL = URL(fileURLWithPath: path)
+            check.arguments = ["-c", "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"]
+            check.standardOutput = FileHandle.nullDevice
+            check.standardError = FileHandle.nullDevice
+            if (try? check.run()) != nil {
+                check.waitUntilExit()
+                if check.terminationStatus == 0 { return URL(fileURLWithPath: path) }
+            }
+        }
+        return nil
+    }
+
+    private func setUpEnvironment() {
+        guard let system = findPython() else {
+            show("Khmer Voice AI needs Python 3.10 or newer.\n\nInstall it from python.org/downloads (or run: brew install python), then open Khmer Voice AI again.", busy: false)
+            return
+        }
+        let venv = support.appendingPathComponent("venv")
+        try? FileManager.default.removeItem(at: venv) // start clean (an old or half-made environment)
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        let steps: [(String, URL, [String])] = [
+            ("Preparing Python…", system, ["-m", "venv", venv.path]),
+            ("Updating the installer…", venv.appendingPathComponent("bin/python"), ["-m", "pip", "install", "--upgrade", "pip"]),
+            ("Installing Khmer Voice AI's components…", venv.appendingPathComponent("bin/python"), ["-m", "pip", "install", "-r", requirements.path]),
+        ]
+        run(steps[...]) { ok in
+            if ok {
+                try? FileManager.default.copyItem(at: self.requirements, to: self.marker)
+                self.justSetUp = true
+                self.launchServer()
+            } else {
+                self.show("Setting up didn't finish.\nCheck your internet connection, then open Khmer Voice AI again.\n\nDetails: Help → Show Server Log.", busy: false)
+            }
+        }
+    }
+
+    /// Run setup steps one after another, showing what's happening (the last line each step prints).
+    private func run(_ steps: ArraySlice<(String, URL, [String])>, done: @escaping (Bool) -> Void) {
+        guard let (title, executable, arguments) = steps.first else { return done(true) }
+        let heading = "Setting up Khmer Voice AI — first launch only (a few minutes, about 400 MB to download)\n\n\(title)"
+        show(heading, busy: true)
+        let process = Process()
+        process.executableURL = executable
+        process.arguments = arguments
+        var env = self.env
+        env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
+        process.environment = env
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: logURL.path) { FileManager.default.createFile(atPath: logURL.path, contents: nil) }
+        let log = try? FileHandle(forWritingTo: logURL)
+        log?.seekToEndOfFile()
+        log?.write(Data("— setup: \(title) —\n".utf8))
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            log?.write(data)
+            let line = String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline).last.map(String.init) ?? ""
+            let short = line.trimmingCharacters(in: .whitespaces).prefix(90)
+            if !short.isEmpty { DispatchQueue.main.async { self.status.stringValue = "\(heading)\n\(short)" } }
+        }
+        process.terminationHandler = { proc in
+            pipe.fileHandleForReading.readabilityHandler = nil
+            DispatchQueue.main.async {
+                if proc.terminationStatus == 0 { self.run(steps.dropFirst(), done: done) } else { done(false) }
+            }
+        }
+        do { try process.run() } catch { done(false) }
     }
 
     private func waitForServer(deadline: Date) {
@@ -411,9 +543,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     @objc private func newVideo() { go("#") }
     @objc private func myProjects() { go("#/projects") }
     @objc private func openInBrowser() { NSWorkspace.shared.open(base) }
-    @objc private func showData() { NSWorkspace.shared.open(backend.appendingPathComponent("data/projects")) }
+    @objc private func showData() {
+        try? FileManager.default.createDirectory(at: dataFolder, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(dataFolder)
+    }
     @objc private func showLog() { NSWorkspace.shared.open(logURL) }
-    @objc private func openReadme() { NSWorkspace.shared.open(backend.deletingLastPathComponent().appendingPathComponent("README.md")) }
+    @objc private func openReadme() {
+        let local = backend.deletingLastPathComponent().appendingPathComponent("README.md")
+        NSWorkspace.shared.open(FileManager.default.fileExists(atPath: local.path) ? local : URL(string: "https://github.com/chydevit/VoiceNova-AI#readme")!)
+    }
     @objc private func reload() {
         if webView.isHidden { startServer() } else { webView.reload() }
     }

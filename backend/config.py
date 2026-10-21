@@ -7,7 +7,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 BACKEND_DIR = Path(__file__).resolve().parent
-load_dotenv(BACKEND_DIR / ".env")
+# The settings file: backend/.env, or another file chosen with ENV_FILE (the Mac app keeps it in
+# ~/Library/Application Support/Khmer Voice AI). The Settings page writes API keys here.
+ENV_FILE = Path(os.getenv("ENV_FILE", "").strip() or BACKEND_DIR / ".env").expanduser()
+load_dotenv(ENV_FILE)
 
 
 def _load_keys_file() -> None:

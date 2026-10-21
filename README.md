@@ -11,6 +11,28 @@ Upload a video in any language and get it back with a **Khmer AI voiceover**, ti
 
 You can then preview it, download the MP4, and download a Khmer `.srt` subtitle file. Subtitles can also be burned into the video.
 
+## Download the Mac app
+
+**[⬇ Download the latest release](https://github.com/chydevit/VoiceNova-AI/releases/latest)**: `Khmer-Voice-AI-…-macOS-arm64.zip`, for Macs with Apple silicon on macOS 13 or newer.
+
+1. **Install the two tools it needs** (one time):
+   - **Python 3.10 or newer**, from [python.org/downloads](https://www.python.org/downloads/macos/), or `brew install python`.
+   - **FFmpeg**: `brew install ffmpeg` (needs [Homebrew](https://brew.sh)).
+2. **Install the app:** unzip it and drag **Khmer Voice AI** into **Applications**.
+3. **Open it the first time:** the app isn't signed by Apple, so **right-click it → Open → Open**. If macOS still refuses, go to System Settings → Privacy & Security → **Open Anyway**.
+4. **Wait for the first-launch setup.** The app installs its components by itself: about 400 MB, a few minutes, one time only.
+5. **Add your key:** click **⚙ Settings** and paste an AI key for translation. A [Google Gemini key](https://aistudio.google.com/apikey) is free to start with. Then drop in a video.
+
+Your projects and settings stay on your Mac, in `~/Library/Application Support/Khmer Voice AI`.
+
+**Optional: removing the original voice (keeping the music).** This needs one large extra download, about 1 GB. Run it in Terminal, then reopen the app:
+
+```bash
+~/Library/"Application Support"/"Khmer Voice AI"/venv/bin/pip install torch torchaudio demucs
+```
+
+On Windows or Linux, or to change the code, run it from source as described below.
+
 ---
 
 ## What you need

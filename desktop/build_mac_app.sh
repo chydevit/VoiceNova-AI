@@ -1,9 +1,12 @@
 #!/bin/bash
-# Build "Khmer Voice AI.app" — a Mac app for THIS computer: it runs the backend from this
-# project folder (backend/.venv), so set up the backend first (see the README).
+# Build "Khmer Voice AI.app".
 #
-#   ./build_mac_app.sh                     build into desktop/build/
+#   ./build_mac_app.sh                     for THIS computer: runs the backend from this project
+#                                          folder (backend/.venv) — set up the backend first (README)
 #   ./build_mac_app.sh --install           …and copy it to /Applications
+#   ./build_mac_app.sh --release           for anyone: the app carries the backend and the web page,
+#                                          sets itself up on first launch, and is zipped for download
+#                                          (desktop/build/Khmer-Voice-AI-<version>-macOS-<arch>.zip)
 #   KEYS_FILE=~/path/keys.json ./build_mac_app.sh --install
 #       optional: a JSON file of API keys ({"GEMINI_API_KEY": "…"}) the app reads at start-up
 #       (only read, never copied; keys in backend/.env win).
@@ -14,7 +17,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 APP="$HERE/build/Khmer Voice AI.app"
-VERSION="1.0"
+VERSION="${VERSION:-1.0.0}"
+MODE="${1:-}"
 
 echo "→ Building the web app"
 if [ -d "$ROOT/frontend/node_modules" ]; then
@@ -23,7 +27,9 @@ elif [ ! -f "$ROOT/frontend/dist/index.html" ]; then
   echo "frontend/dist is missing: run 'npm install' in frontend/ first." >&2
   exit 1
 fi
-[ -x "$ROOT/backend/.venv/bin/python" ] || { echo "backend/.venv is missing: set up the backend first (README)." >&2; exit 1; }
+if [ "$MODE" != "--release" ]; then
+  [ -x "$ROOT/backend/.venv/bin/python" ] || { echo "backend/.venv is missing: set up the backend first (README)." >&2; exit 1; }
+fi
 
 echo "→ Compiling the Mac app"
 rm -rf "$APP"
@@ -47,6 +53,19 @@ else
   echo "  (Pillow not found — the app gets the default icon. pip3 install pillow, then build again.)"
 fi
 
+if [ "$MODE" = "--release" ]; then
+  echo "→ Bundling the backend and the web page"
+  rsync -a --exclude '.venv' --exclude 'data' --exclude '__pycache__' --exclude '*.pyc' --exclude '.env' --exclude 'separate_work' \
+    "$ROOT/backend/" "$APP/Contents/Resources/backend/"
+  mkdir -p "$APP/Contents/Resources/frontend"
+  cp -R "$ROOT/frontend/dist" "$APP/Contents/Resources/frontend/dist"
+  BACKEND_PATH=""   # bundled: the app finds everything inside itself
+  KEYS_PATH=""
+else
+  BACKEND_PATH="$ROOT/backend"
+  KEYS_PATH="${KEYS_FILE:-}"
+fi
+
 xml() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<<"$1"; }
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -66,8 +85,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSHumanReadableCopyright</key><string>Khmer Voice AI — runs on this computer.</string>
   <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
-  <key>KVABackend</key><string>$(xml "$ROOT/backend")</string>
-  <key>KVAKeysFile</key><string>$(xml "${KEYS_FILE:-}")</string>
+  <key>KVABackend</key><string>$(xml "$BACKEND_PATH")</string>
+  <key>KVAKeysFile</key><string>$(xml "$KEYS_PATH")</string>
 </dict>
 </plist>
 PLIST
@@ -76,7 +95,14 @@ PLIST
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
 echo "✓ Built: $APP"
 
-if [ "${1:-}" = "--install" ]; then
+if [ "$MODE" = "--release" ]; then
+  ZIP="$HERE/build/Khmer-Voice-AI-$VERSION-macOS-$(uname -m).zip"
+  rm -f "$ZIP"
+  ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+  echo "✓ Release zip: $ZIP ($(du -h "$ZIP" | cut -f1))"
+fi
+
+if [ "$MODE" = "--install" ]; then
   DEST="/Applications"
   [ -w "$DEST" ] || DEST="$HOME/Applications"
   mkdir -p "$DEST"

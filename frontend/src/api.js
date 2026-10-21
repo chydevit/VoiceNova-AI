@@ -25,6 +25,8 @@ const sentence = (id, sid) => `${project(id)}/sentences/${sid}`;
 
 export const api = {
   health: () => request('/api/health'),
+  appSettings: () => request('/api/settings'),
+  saveAppSettings: (values) => request('/api/settings', { method: 'PUT', json: { values } }),
   list: () => request('/api/projects').then((b) => b.projects),
   get: (id) => request(project(id)).then((b) => b.project),
   remove: (id) => request(project(id), { method: 'DELETE' }),
