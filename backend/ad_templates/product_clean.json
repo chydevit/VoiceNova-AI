@@ -1,0 +1,87 @@
+{
+ "version": 1,
+ "id": "product_clean",
+ "name": "Clean showcase",
+ "km": "បង្ហាញស្អាត",
+ "style": "product",
+ "about": "Calm zooms over the product, clear boxed captions, a tidy end card.",
+ "fonts": null,
+ "palette": "brand",
+ "shots": {
+  "fit": "blur",
+  "motion": [
+   "zoom_in",
+   "pan_left",
+   "zoom_out",
+   "pan_right"
+  ],
+  "motion_amount": 0.1,
+  "transition": {
+   "type": "fade",
+   "duration": 0.4
+  }
+ },
+ "captions": {
+  "default": {
+   "preset": "bold_box",
+   "position": "lower",
+   "anim": "pop",
+   "size": 1.0
+  },
+  "hook": {
+   "preset": "headline",
+   "position": "center",
+   "anim": "pop",
+   "size": 1.2
+  },
+  "price": {
+   "preset": "price_tag",
+   "position": "upper_right",
+   "anim": "pop",
+   "size": 1.0
+  },
+  "promo": {
+   "preset": "burst",
+   "position": "upper_left",
+   "anim": "pop",
+   "size": 1.0
+  },
+  "cta": {
+   "preset": "button",
+   "position": "lower",
+   "anim": "slide_up",
+   "size": 1.0
+  }
+ },
+ "logo": {
+  "corner": "top_right",
+  "size": 0.14,
+  "opacity": 0.9
+ },
+ "sponsored": {
+  "show": false,
+  "corner": "top_left"
+ },
+ "end_screen": {
+  "layout": "centered",
+  "background": "gradient",
+  "seconds": 3.0,
+  "anim": "pop",
+  "show": [
+   "logo",
+   "headline",
+   "price",
+   "promo",
+   "cta",
+   "contact"
+  ]
+ },
+ "music": {
+  "mood": "upbeat",
+  "volume": 0.35,
+  "duck": 0.3
+ },
+ "voice": {
+  "speed": 1.0
+ }
+}

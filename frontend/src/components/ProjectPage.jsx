@@ -89,6 +89,7 @@ export default function ProjectPage({ id, health }) {
   const running = RUNNING.includes(project.status);
   const sentences = project.sentences || [];
   const canEdit = sentences.length > 0 && !running;
+  const missing = sentences.filter((s) => s.original_text?.trim() && !(texts[s.id] ?? s.khmer_text)?.trim()).length; // no Khmer yet
   const generating = project.status === 'generating';
 
   async function generate() {
@@ -112,6 +113,17 @@ export default function ProjectPage({ id, health }) {
       setActionError(err);
     } finally {
       setSending(false);
+    }
+  }
+
+  // Lines the translation left without Khmer: translate them again (only those; the rest stays).
+  async function translateMissing() {
+    setActionError(null);
+    try {
+      setProject(await api.translateMissing(id));
+      setPollKey((k) => k + 1);
+    } catch (err) {
+      setActionError(err);
     }
   }
 
@@ -154,6 +166,15 @@ export default function ProjectPage({ id, health }) {
       {project.warnings?.length > 0 && !running && (
         <Notice>
           <ul className="list-disc space-y-1 pl-5">{project.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
+        </Notice>
+      )}
+      {missing > 0 && !running && project.status === 'review' && (
+        <Notice className="flex flex-wrap items-center gap-3">
+          <span className="min-w-0 flex-1">
+            <b>{missing} line{missing === 1 ? ' has' : 's have'} no Khmer yet</b> and would be silent in the video. Translate {missing === 1 ? 'it' : 'them'} again
+            (the AI reads the whole video first, so names stay the same and misheard words are understood), or type the Khmer yourself.
+          </span>
+          <Button size="sm" onClick={translateMissing}>✨ Translate {missing === 1 ? 'it' : 'them'}</Button>
         </Notice>
       )}
 

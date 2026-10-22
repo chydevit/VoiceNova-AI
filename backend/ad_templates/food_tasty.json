@@ -1,0 +1,89 @@
+{
+ "version": 1,
+ "id": "food_tasty",
+ "name": "Tasty",
+ "km": "ឆ្ងាញ់ពិសារ",
+ "style": "food",
+ "about": "Close-up zooms and tilts on the food, outlined captions, a ribbon for the offer.",
+ "fonts": {
+  "title": "Koulen",
+  "body": "Kantumruy Pro"
+ },
+ "palette": "brand",
+ "shots": {
+  "fit": "fill",
+  "motion": [
+   "zoom_in",
+   "pan_up",
+   "zoom_out"
+  ],
+  "motion_amount": 0.12,
+  "transition": {
+   "type": "slide_left",
+   "duration": 0.35
+  }
+ },
+ "captions": {
+  "default": {
+   "preset": "outline",
+   "position": "lower",
+   "anim": "pop",
+   "size": 1.0
+  },
+  "hook": {
+   "preset": "headline",
+   "position": "upper",
+   "anim": "pop",
+   "size": 1.2
+  },
+  "price": {
+   "preset": "price_tag",
+   "position": "lower_right",
+   "anim": "pop",
+   "size": 1.0
+  },
+  "promo": {
+   "preset": "ribbon",
+   "position": "upper",
+   "anim": "pop",
+   "size": 1.0
+  },
+  "cta": {
+   "preset": "button",
+   "position": "lower",
+   "anim": "slide_up",
+   "size": 1.0
+  }
+ },
+ "logo": {
+  "corner": "top_right",
+  "size": 0.14,
+  "opacity": 0.9
+ },
+ "sponsored": {
+  "show": false,
+  "corner": "top_left"
+ },
+ "end_screen": {
+  "layout": "split",
+  "background": "last_shot_blur",
+  "seconds": 3.0,
+  "anim": "pop",
+  "show": [
+   "logo",
+   "headline",
+   "price",
+   "promo",
+   "cta",
+   "contact"
+  ]
+ },
+ "music": {
+  "mood": "fun",
+  "volume": 0.35,
+  "duck": 0.3
+ },
+ "voice": {
+  "speed": 1.05
+ }
+}

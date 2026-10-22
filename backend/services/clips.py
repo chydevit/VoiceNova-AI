@@ -89,7 +89,7 @@ def apply(project: dict, results: dict[str, dict]) -> list[AppError]:
     """Store finished clips on the sentences they were made for. A sentence edited in the
     meantime keeps its "needs voice" status instead of getting an out-of-date clip."""
     errors = []
-    for s in project["sentences"]:
+    for s in sentences.items(project):
         r = results.get(s["id"])
         if r is None:
             continue

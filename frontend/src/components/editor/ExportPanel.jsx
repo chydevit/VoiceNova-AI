@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { timeAgo } from '../../api.js';
+import { formatTime, timeAgo } from '../../api.js';
+import { canvasSize, keptRanges, skippedRanges, timelineEnd, withVoice } from '../../lib/timeline.js';
 import { Button, Progress, inputCss } from '../ui.jsx';
 
 const FORMATS = [
@@ -45,11 +46,62 @@ function WatchDialog({ url, title, onClose }) {
   );
 }
 
+const SHAPES = [
+  ['original', 'Original', null],
+  ['16:9', '16:9', 'YouTube'],
+  ['9:16', '9:16', 'TikTok · Reels'],
+  ['1:1', '1:1', 'Square'],
+];
+
+function Choice({ value, options, onChange, disabled, label }) {
+  return (
+    <div className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }} role="radiogroup" aria-label={label}>
+      {options.map(([key, name, note]) => (
+        <button key={key} type="button" role="radio" aria-checked={value === key} disabled={disabled} onClick={() => onChange(key)}
+          className={`rounded-lg border px-1.5 py-1.5 text-center text-xs leading-tight disabled:opacity-50 ${value === key ? 'border-accent bg-accent-soft font-semibold text-accent-ink' : 'border-line-strong hover:bg-raised'}`}>
+          {name}{note && <span className="block text-[10px] font-normal text-muted">{note}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// How the exported picture comes out: its shape, its size, how a picture of another shape fits in,
+// and how much it is compressed. The preview shows the shape at once.
+function PictureSettings({ project, locked, actions }) {
+  const settings = { resolution: 'original', aspect: 'original', fit: 'fit', quality: 'high', ...project.settings.export };
+  const set = (patch) => actions.settings({ export: { ...settings, ...patch } });
+  const { width, height } = canvasSize(project);
+  const { width: w, height: h } = project.video;
+  const differs = width / height !== w / h;
+  return (
+    <section className="space-y-2.5 rounded-xl border border-line p-3">
+      <p className="flex items-baseline justify-between text-sm font-semibold">Picture <span className="font-mono text-xs font-normal text-muted">{width} × {height}</span></p>
+      <div className="space-y-1"><span className="text-xs text-muted">Shape</span><Choice label="Shape" value={settings.aspect} disabled={locked} onChange={(aspect) => set({ aspect })} options={SHAPES} /></div>
+      <div className="space-y-1"><span className="text-xs text-muted">Size</span>
+        <Choice label="Size" value={settings.resolution} disabled={locked} onChange={(resolution) => set({ resolution })}
+          options={[['original', 'Original', `${Math.min(w, h)}p`], ['720p', '720p', 'smaller'], ['1080p', '1080p', 'HD']]} />
+      </div>
+      {differs && (
+        <div className="space-y-1"><span className="text-xs text-muted">A picture of another shape</span>
+          <Choice label="Fit" value={settings.fit} disabled={locked} onChange={(fit) => set({ fit })}
+            options={[['fit', 'Show it whole', 'black bars'], ['fill', 'Fill the frame', 'edges cut off']]} />
+        </div>
+      )}
+      <div className="space-y-1"><span className="text-xs text-muted">Quality</span>
+        <Choice label="Quality" value={settings.quality} disabled={locked} onChange={(quality) => set({ quality })}
+          options={[['high', 'High', 'best'], ['medium', 'Medium', 'smaller file'], ['small', 'Small', 'smallest file']]} />
+      </div>
+    </section>
+  );
+}
+
 // Export only what changed, show progress, and keep every export as a version.
 export default function ExportPanel({ project, locked, onExport, actions }) {
   const prefs = project.export_prefs || { formats: ['mp4', 'srt'], audio_format: 'mp3' };
   const [formats, setFormats] = useState(prefs.formats);
   const [audioFormat, setAudioFormat] = useState(prefs.audio_format);
+  const [withMarks, setWithMarks] = useState(prefs.watermark !== false); // export with the watermarks
   const [watch, setWatch] = useState(null);
   const exporting = project.status === 'exporting';
   const versions = [...project.versions].reverse();
@@ -57,9 +109,13 @@ export default function ExportPanel({ project, locked, onExport, actions }) {
   const changed = (project.counts.edited || 0) + (project.counts.failed || 0);
   const tooLong = project.counts.too_long || 0;
   const toggle = (key) => setFormats((f) => (f.includes(key) ? f.filter((k) => k !== key) : [...f, key]));
+  const tracks = withVoice(project.timeline, project.sentences);
+  const length = keptRanges(skippedRanges(tracks), timelineEnd(tracks)).reduce((sum, [a, b]) => sum + b - a, 0);
+  const marks = (tracks.find((t) => t.id === 'watermark')?.clips || []).filter((w) => !w.skipped).length;
 
   return (
     <div className="space-y-4">
+      <PictureSettings project={project} locked={locked || exporting} actions={actions} />
       <fieldset disabled={locked || exporting} className="space-y-1.5">
         {FORMATS.map((f) => {
           const on = formats.includes(f.key);
@@ -79,6 +135,16 @@ export default function ExportPanel({ project, locked, onExport, actions }) {
             </label>
           );
         })}
+        {marks > 0 && (
+          <div className="flex gap-1 pt-1" role="group" aria-label="Watermark">
+            {[[true, `With watermark${marks > 1 ? 's' : ''}`], [false, 'Without']].map(([on, label]) => (
+              <button key={label} type="button" onClick={() => setWithMarks(on)} aria-pressed={withMarks === on}
+                className={`flex-1 rounded-lg border px-2 py-1.5 text-xs font-semibold ${withMarks === on ? 'border-accent bg-accent-soft text-accent-ink' : 'border-line-strong text-muted hover:bg-raised'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </fieldset>
 
       {exporting ? (
@@ -89,10 +155,11 @@ export default function ExportPanel({ project, locked, onExport, actions }) {
         </div>
       ) : (
         <div>
-          <Button size="lg" className="w-full" disabled={locked || !formats.length} onClick={() => onExport(formats, audioFormat)}>
+          <Button size="lg" className="w-full" disabled={locked || !formats.length} onClick={() => onExport(formats, audioFormat, undefined, undefined, withMarks)}>
             Export <span className="khmer font-normal opacity-80">· នាំចេញ</span>
           </Button>
           <p className="mt-2 text-xs text-muted">
+            {formatTime(length)} long, with every track: cuts and skipped parts left out, added clips, text and the sound mixed. {' '}
             {changed ? `${changed} changed sentence${changed === 1 ? '' : 's'} will be voiced; every other clip is reused.` : 'Every clip is ready — nothing needs voicing again.'}
             {tooLong > 0 && ` ${tooLong} too long — they'll be cut at the end.`}
           </p>

@@ -1,0 +1,86 @@
+{
+ "version": 1,
+ "id": "shop_story",
+ "name": "Brand story",
+ "km": "រឿងរ៉ាវម៉ាក",
+ "style": "shop",
+ "about": "Slow pans and soft fades, small rounded labels, your brand colours on the end screen.",
+ "fonts": null,
+ "palette": "brand",
+ "shots": {
+  "fit": "blur",
+  "motion": [
+   "pan_right",
+   "zoom_in",
+   "pan_left"
+  ],
+  "motion_amount": 0.08,
+  "transition": {
+   "type": "fade",
+   "duration": 0.5
+  }
+ },
+ "captions": {
+  "default": {
+   "preset": "pill",
+   "position": "lower",
+   "anim": "fade",
+   "size": 1.0
+  },
+  "hook": {
+   "preset": "headline",
+   "position": "center",
+   "anim": "fade",
+   "size": 1.2
+  },
+  "price": {
+   "preset": "pill",
+   "position": "lower_right",
+   "anim": "fade",
+   "size": 1.0
+  },
+  "promo": {
+   "preset": "highlight",
+   "position": "upper",
+   "anim": "fade",
+   "size": 1.0
+  },
+  "cta": {
+   "preset": "button",
+   "position": "lower",
+   "anim": "fade",
+   "size": 1.0
+  }
+ },
+ "logo": {
+  "corner": "top_left",
+  "size": 0.16,
+  "opacity": 0.9
+ },
+ "sponsored": {
+  "show": false,
+  "corner": "top_right"
+ },
+ "end_screen": {
+  "layout": "centered",
+  "background": "brand",
+  "seconds": 3.0,
+  "anim": "fade",
+  "show": [
+   "logo",
+   "headline",
+   "price",
+   "promo",
+   "cta",
+   "contact"
+  ]
+ },
+ "music": {
+  "mood": "calm",
+  "volume": 0.35,
+  "duck": 0.3
+ },
+ "voice": {
+  "speed": 1.0
+ }
+}

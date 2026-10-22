@@ -16,7 +16,7 @@ permissions:
   contents: write
 
 env:
-  DEV_VERSION: 1.2.0-dev
+  DEV_VERSION: 1.3.0-dev
 
 jobs:
   windows:

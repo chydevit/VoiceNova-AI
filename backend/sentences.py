@@ -1,13 +1,14 @@
-"""One sentence = one Khmer voice clip on the timeline. The rules for editing them live here
-(pure data: no files, no network).
+"""One sentence = one Khmer voice clip on the timeline's voice track. The rules for editing them
+live here (pure data: no files, no network).
 
-A sentence plays its clip from `start`; `end` is the end of its time slot. A clip longer than
-its slot is cut there (status "too_long"). Sentences never overlap.
+A sentence plays its clip from `start`; `end` is the end of its time slot (timeline seconds). A clip
+longer than its slot is cut there (status "too_long"). Sentences never overlap.
 """
 import hashlib
 import unicodedata
 
 import config
+import timeline
 from errors import AppError
 
 MIN_LENGTH = 0.3  # shortest time slot, in seconds
@@ -18,7 +19,7 @@ VOICE_FIELDS = ("khmer_text", "voice", "speed")  # changing these needs a new cl
 
 
 def make(sid: str, start: float, end: float, original_text: str = "", khmer_text: str = "", voice: str = "female",
-         speed: float = 1.0, volume: float = 1.0, **extra) -> dict:
+         speed: float = 1.0, volume: int = 100, **extra) -> dict:
     s = {
         "id": sid,
         "start": round(start, 3),
@@ -28,7 +29,8 @@ def make(sid: str, start: float, end: float, original_text: str = "", khmer_text
         "subtitle_text": None,  # None = the subtitle shows khmer_text
         "voice": voice,
         "speed": round(speed, 2),
-        "volume": round(volume, 2),
+        "volume": timeline.volume(volume),  # percent (100 = as voiced)
+        "muted": False,
         "audio_file_path": None,
         "audio_key": None,
         "audio_duration": None,
@@ -36,6 +38,9 @@ def make(sid: str, start: float, end: float, original_text: str = "", khmer_text
         "shortened": False,
         "voice_warning": None,  # set when the clip may be wrong even after voicing it again (services/voicecheck.py)
         "error": None,
+        "type": "voice",
+        "skipped": False,  # silent in the export, and its subtitle hidden
+        "subtitle_timing": None,  # None = the subtitle shows during the slot; {"from", "to"}: seconds after start
     }
     s.update(extra)
     refresh(s)
@@ -77,27 +82,33 @@ def refresh(s: dict) -> dict:
     return s
 
 
+def items(project: dict) -> list[dict]:
+    """The sentences: the clips of the voice track, in time order."""
+    return timeline.clips(project, "voice")
+
+
 def refresh_all(project: dict) -> None:
-    for s in project["sentences"]:
+    for s in items(project):
         if s["status"] != "regenerating":
             refresh(s)
 
 
-def sort(project: dict) -> None:
-    project["sentences"].sort(key=lambda s: s["start"])
-
-
 def find(project: dict, sid: str) -> tuple[int, dict]:
-    for i, s in enumerate(project["sentences"]):
+    for i, s in enumerate(items(project)):
         if s["id"] == sid:
             return i, s
     raise AppError("That sentence doesn't exist any more.", hint="Reload the page.", status=404)
 
 
+def limit(project: dict) -> float:
+    """How far sentences may go: the end of the picture (or of the music, if that goes on longer)."""
+    return timeline.end(project, exclude=("voice", "text")) or project["video"]["duration"]
+
+
 def room_end(project: dict, i: int) -> float:
-    """Where the free time after sentence i ends: the next sentence's start, or the end of the video."""
-    sents = project["sentences"]
-    return sents[i + 1]["start"] if i + 1 < len(sents) else project["video"]["duration"]
+    """Where the free time after sentence i ends: the next sentence's start, or the end of the timeline."""
+    sents = items(project)
+    return sents[i + 1]["start"] if i + 1 < len(sents) else max(limit(project), sents[i]["end"])
 
 
 def budget(seconds: float) -> int:
@@ -130,7 +141,9 @@ def patch(project: dict, sid: str, fields: dict, voices: tuple[str, ...]) -> dic
     if "speed" in fields:
         s["speed"] = round(min(config.MAX_SPEED, max(config.MIN_SPEED, fields["speed"])), 2)
     if "volume" in fields:
-        s["volume"] = round(min(2.0, max(0.0, fields["volume"])), 2)
+        s["volume"] = timeline.volume(fields["volume"])
+    if "muted" in fields:
+        s["muted"] = bool(fields["muted"])
     if any(k in fields for k in VOICE_FIELDS):
         s["error"] = None
     return refresh(s)
@@ -139,7 +152,7 @@ def patch(project: dict, sid: str, fields: dict, voices: tuple[str, ...]) -> dic
 def apply_all(project: dict, fields: dict, ids: list[str] | None, voices: tuple[str, ...]) -> int:
     """Set voice / speed / volume on many sentences at once. Returns how many changed."""
     wanted = {k: v for k, v in fields.items() if k in ("voice", "speed", "volume") and v is not None}
-    targets = [s for s in project["sentences"] if ids is None or s["id"] in ids]
+    targets = [s for s in items(project) if ids is None or s["id"] in ids]
     for s in targets:
         patch(project, s["id"], wanted, voices)
     if ids is None:  # "apply to all" also becomes the default for new sentences
@@ -148,11 +161,11 @@ def apply_all(project: dict, fields: dict, ids: list[str] | None, voices: tuple[
 
 
 def check_timing(project: dict, s: dict | None, start: float, end: float) -> tuple[float, float]:
-    duration = project["video"]["duration"]
+    duration = max(limit(project), s["end"] if s else 0.0)
     start, end = round(max(0.0, start), 3), round(min(duration, end), 3)
     if end - start < MIN_LENGTH - 0.001:
         raise AppError(f"A sentence must be at least {MIN_LENGTH} seconds long.", hint="Make the time slot longer.")
-    for other in project["sentences"]:
+    for other in items(project):
         if other is not s and start < other["end"] - 0.001 and end > other["start"] + 0.001:
             raise AppError(
                 f"That would overlap the sentence at {_clock(other['start'])}.",
@@ -187,43 +200,44 @@ def split(project: dict, sid: str, index: int | None, at: float | None) -> tuple
     new = make(
         new_id(project), at, s["end"], original_text=" ".join(words[cut:]), khmer_text=second,
         voice=s["voice"], speed=s["speed"], volume=s["volume"], subtitle_text=sub_b,
+        muted=s.get("muted", False), fade_out=s.get("fade_out", 0.0),  # a fade stays on the outer edge it was on
     )
-    s.update(end=at, khmer_text=first, original_text=" ".join(words[:cut]), subtitle_text=sub_a, shortened=False, error=None)
+    s.update(end=at, khmer_text=first, original_text=" ".join(words[:cut]), subtitle_text=sub_a, shortened=False, error=None, fade_out=0.0)
     clear_audio(s)
-    project["sentences"].insert(i + 1, new)
+    items(project).insert(i + 1, new)
     return s, new
 
 
 def merge(project: dict, sid: str) -> dict:
     """Join a sentence with the next one."""
     i, s = find(project, sid)
-    if i + 1 >= len(project["sentences"]):
+    if i + 1 >= len(items(project)):
         raise AppError("This is the last sentence — there is nothing after it to merge with.")
-    nxt = project["sentences"][i + 1]
+    nxt = items(project)[i + 1]
     if s["subtitle_text"] is not None or nxt["subtitle_text"] is not None:
         s["subtitle_text"] = clean(f"{subtitle(s)} {subtitle(nxt)}")
     s.update(
         end=nxt["end"],
         khmer_text=clean(f"{s['khmer_text']} {nxt['khmer_text']}"),
         original_text=clean(f"{s['original_text']} {nxt['original_text']}"),
-        shortened=False, error=None,
+        shortened=False, error=None, fade_out=nxt.get("fade_out", 0.0),
     )
     clear_audio(s)
-    del project["sentences"][i + 1]
+    del items(project)[i + 1]
     return s
 
 
 def add(project: dict, start: float, end: float | None, khmer_text: str, original_text: str) -> dict:
     """Add a sentence in free time on the timeline."""
-    duration = project["video"]["duration"]
+    duration = limit(project)
     start = round(max(0.0, min(start, duration - MIN_LENGTH)), 3)
-    for other in project["sentences"]:
+    for other in items(project):
         if other["start"] - 0.001 < start < other["end"] - 0.001:
             raise AppError(
                 f"There is already a sentence at {_clock(start)}.",
                 hint="Pick a time in a gap between sentences, or split that sentence instead.", status=409,
             )
-    free_until = min((o["start"] for o in project["sentences"] if o["start"] >= start), default=duration)
+    free_until = min((o["start"] for o in items(project) if o["start"] >= start), default=duration)
     if end is None:
         end = start + max(1.5, len(clean(khmer_text)) / KHMER_CHARS_PER_SECOND + 0.3)
     end = min(end, free_until)
@@ -233,95 +247,29 @@ def add(project: dict, start: float, end: float | None, khmer_text: str, origina
     s = make(new_id(project), start, end, original_text=clean(original_text), khmer_text=khmer_text,
              voice=settings["voice"], speed=settings["speed"])
     check_timing(project, s, s["start"], s["end"])
-    project["sentences"].append(s)
-    sort(project)
+    items(project).append(s)
+    timeline.sort(project)
     return s
 
 
 def remove(project: dict, sid: str, fill: str) -> None:
-    """Delete a sentence. fill="original" plays the original audio at full volume in its place."""
+    """Delete a sentence. fill="original" plays the original audio (with its voice) at full volume
+    in its place: the background pieces there keep the voice."""
     i, s = find(project, sid)
-    del project["sentences"][i]
+    del items(project)[i]
     if fill == "original":
-        project["original_gaps"] = merge_ranges([*project["original_gaps"], {"start": s["start"], "end": s["end"]}])
-
-
-def merge_ranges(ranges: list[dict]) -> list[dict]:
-    """Sort {"start", "end"} ranges and join the ones that overlap or touch."""
-    merged: list[dict] = []
-    for r in sorted(ranges, key=lambda r: r["start"]):
-        if merged and r["start"] <= merged[-1]["end"] + 0.01:
-            merged[-1]["end"] = max(merged[-1]["end"], r["end"])
-        else:
-            merged.append(dict(r))
-    return merged
-
-
-def layer_ranges(ranges: list[dict]) -> list[dict]:
-    """Background volume parts {start, end, gain, fade}, in the order they were made: a later part
-    wins where it overlaps an earlier one (which keeps its pieces on either side). Parts at normal
-    volume (gain 1) only punch holes and are then dropped; touching parts that match are joined."""
-    layered: list[dict] = []
-    for r in ranges:
-        kept = []
-        for p in layered:
-            if p["end"] <= r["start"] or p["start"] >= r["end"]:
-                kept.append(p)
-                continue
-            if p["start"] < r["start"]:
-                kept.append({**p, "end": r["start"]})
-            if p["end"] > r["end"]:
-                kept.append({**p, "start": r["end"]})
-        layered = kept + [dict(r)]
-    out: list[dict] = []
-    for p in sorted((p for p in layered if p["end"] - p["start"] >= 0.05 and p["gain"] != 1), key=lambda p: p["start"]):
-        last = out[-1] if out else None
-        if last and abs(last["end"] - p["start"]) < 0.01 and last["gain"] == p["gain"] and last.get("fade") == p.get("fade"):
-            last["end"] = p["end"]
-        else:
-            out.append(p)
-    return out
-
-
-# ---------- parts removed from the video ----------
-# settings["video_cuts"] are parts of the source video left out of the export. Every time in the
-# project stays in source time; the export cuts those parts out and moves what follows up.
-
-def kept_ranges(cuts: list[dict], duration: float) -> list[tuple[float, float]]:
-    """The (start, end) parts of the source video that are kept, in order."""
-    out, t = [], 0.0
-    for c in merge_ranges(cuts):
-        if c["start"] > t:
-            out.append((t, min(c["start"], duration)))
-        t = max(t, c["end"])
-    if t < duration:
-        out.append((t, duration))
-    return [(a, b) for a, b in out if b - a > 0.001]
-
-
-def output_time(t: float, cuts: list[dict]) -> float:
-    """Where source time t lands in the exported video (inside a removed part: where it was)."""
-    removed = 0.0
-    for c in merge_ranges(cuts):
-        if t <= c["start"]:
-            break
-        removed += min(t, c["end"]) - c["start"]
-    return t - removed
-
-
-def removed(s: dict, cuts: list[dict]) -> bool:
-    """True when the whole sentence is inside a part removed from the video."""
-    return any(c["start"] - 0.01 <= s["start"] and s["end"] <= c["end"] + 0.01 for c in cuts)
+        timeline.set_background(project, s["start"], s["end"], keep_voice=True)
 
 
 def clear_audio(s: dict) -> None:
     s.update(audio_file_path=None, audio_key=None, audio_duration=None)
+    s.pop("keys", None)  # a volume line was drawn on the old sound
     refresh(s)
 
 
 def new_id(project: dict) -> str:
     n = project.get("next_id", 1)
-    taken = {s["id"] for s in project["sentences"]}
+    taken = {s["id"] for s in items(project)}
     while f"s{n}" in taken:
         n += 1
     project["next_id"] = n + 1

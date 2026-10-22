@@ -1,0 +1,90 @@
+{
+ "version": 1,
+ "id": "estate_luxury",
+ "name": "Luxury property",
+ "km": "អចលនទ្រព្យប្រណីត",
+ "style": "real_estate",
+ "about": "Slow, wide camera moves, elegant Moul titles, a ribbon for the price.",
+ "fonts": {
+  "title": "Moul",
+  "body": "Kantumruy Pro"
+ },
+ "palette": "brand",
+ "shots": {
+  "fit": "fill",
+  "motion": [
+   "pan_right",
+   "zoom_out",
+   "pan_left",
+   "zoom_in"
+  ],
+  "motion_amount": 0.1,
+  "transition": {
+   "type": "fade",
+   "duration": 0.6
+  }
+ },
+ "captions": {
+  "default": {
+   "preset": "outline",
+   "position": "bottom",
+   "anim": "fade",
+   "size": 1.0
+  },
+  "hook": {
+   "preset": "headline",
+   "position": "center",
+   "anim": "fade",
+   "size": 1.1
+  },
+  "price": {
+   "preset": "ribbon",
+   "position": "lower",
+   "anim": "fade",
+   "size": 1.0
+  },
+  "promo": {
+   "preset": "pill",
+   "position": "upper",
+   "anim": "fade",
+   "size": 1.0
+  },
+  "cta": {
+   "preset": "button",
+   "position": "lower",
+   "anim": "fade",
+   "size": 1.0
+  }
+ },
+ "logo": {
+  "corner": "top_right",
+  "size": 0.12,
+  "opacity": 0.85
+ },
+ "sponsored": {
+  "show": false,
+  "corner": "top_left"
+ },
+ "end_screen": {
+  "layout": "bottom_bar",
+  "background": "last_shot_blur",
+  "seconds": 3.5,
+  "anim": "fade",
+  "show": [
+   "logo",
+   "headline",
+   "price",
+   "promo",
+   "cta",
+   "contact"
+  ]
+ },
+ "music": {
+  "mood": "luxury",
+  "volume": 0.35,
+  "duck": 0.3
+ },
+ "voice": {
+  "speed": 0.95
+ }
+}

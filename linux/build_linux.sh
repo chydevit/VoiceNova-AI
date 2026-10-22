@@ -1,13 +1,13 @@
 #!/bin/bash
 # Build the Linux downloads (x86_64): an AppImage and a .deb. Run on Linux (GitHub's ubuntu runner).
-#   VERSION=1.2.0 ./linux/build_linux.sh          (frontend/dist must be built first)
+#   VERSION=1.3.0 ./linux/build_linux.sh          (frontend/dist must be built first)
 # Writes build/linux/Khmer-Voice-AI-<version>-x86_64.AppImage and build/linux/khmer-voice-ai_<version>_amd64.deb.
 # The app sets itself up on first launch with the bundled uv (which downloads Python), like the Mac and
 # Windows apps; FFmpeg is bundled (BtbN static builds, GPL).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION="${VERSION:-1.2.0}"
+VERSION="${VERSION:-1.3.0}"
 OUT="$ROOT/build/linux"
 APPDIR="$OUT/AppDir"
 rm -rf "$OUT" && mkdir -p "$APPDIR/frontend" "$APPDIR/ffmpeg"

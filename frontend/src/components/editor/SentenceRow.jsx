@@ -3,6 +3,7 @@ import { formatTime } from '../../api.js';
 import { budget, splitPoint } from '../../lib/khmer.js';
 import { voiceLabel } from '../../lib/voices.js';
 import { Chip, IconButton, inputCss, textareaCss } from '../ui.jsx';
+import VolumeControl from './VolumeControl.jsx';
 
 const STATUS = {
   ok: { text: 'Ready', tone: 'green', dot: 'bg-emerald-500' },
@@ -54,7 +55,7 @@ const ICONS = {
 };
 
 // One sentence. Collapsed it's two lines; selected, it opens with every control.
-function SentenceRow({ s, number, isLast, voices, provider, selected, playing, busy, locked, removed, actions, onSelect, onPlay, onSuggest }) {
+function SentenceRow({ s, number, isLast, voices, provider, selected, playing, busy, locked, removed, actions, onSelect, onPlay, onSuggest, sound }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const caret = useRef(null);
   const slot = s.end - s.start;
@@ -72,7 +73,6 @@ function SentenceRow({ s, number, isLast, voices, provider, selected, playing, b
     if (body && s.khmer_text) actions.regenerate(s.id);
   };
   const [speed, setSpeed] = useCommitted(s.speed, (v) => change({ speed: v }));
-  const [volume, setVolume] = useCommitted(s.volume, (v) => actions.patch(s.id, { volume: v }));
   useEffect(() => { if (!selected) setConfirmDelete(false); }, [selected]);
 
   const frame = `rounded-xl border transition ${selected ? 'border-accent bg-panel shadow-md ring-1 ring-accent/30' : playing ? 'border-sky-500/40 bg-sky-500/5' : 'border-transparent hover:border-line hover:bg-raised'}`;
@@ -91,7 +91,7 @@ function SentenceRow({ s, number, isLast, voices, provider, selected, playing, b
               {s.status === 'too_long' && <span className="font-sans font-semibold text-amber-600 dark:text-amber-400">too long</span>}
               {suspect && <span className="font-sans font-semibold text-amber-600 dark:text-amber-400">check voice</span>}
               {s.shortened && <span className="font-sans text-sky-600 dark:text-sky-400">shortened</span>}
-              {removed && <span className="font-sans font-semibold text-red-600 dark:text-red-400">✂ removed</span>}
+              {removed && <span className="font-sans font-semibold text-red-600 dark:text-red-400">⤼ skipped</span>}
             </p>
             <p className={`khmer line-clamp-2 text-sm ${s.khmer_text ? 'text-ink' : 'italic text-faint'}`}>{s.khmer_text || 'No Khmer text yet'}</p>
           </div>
@@ -107,7 +107,7 @@ function SentenceRow({ s, number, isLast, voices, provider, selected, playing, b
         <span className="mr-1 text-sm font-bold text-accent-ink">#{number}</span>
         <Chip tone={status.tone}>{status.text}</Chip>
         {s.shortened && <Chip tone="sky" title="The translation was shortened to fit the time">shortened</Chip>}
-        {removed && <Chip tone="red" title="This sentence is inside a part removed from the video, so it's left out of the export">✂ removed</Chip>}
+        {removed && <Chip tone="red" title="This sentence is skipped, or inside a skipped part of the video, so it's left out of the export">⤼ skipped</Chip>}
         <span className="ml-auto flex items-center">
           <IconButton label="Play" onClick={() => onPlay(s)}><Icon d={ICONS.play} /></IconButton>
           <IconButton label="Regenerate the voice" active={s.status === 'edited' || s.status === 'failed' || suspect} disabled={disabled || !s.khmer_text}
@@ -202,11 +202,12 @@ function SentenceRow({ s, number, isLast, voices, provider, selected, playing, b
           <input type="range" min="0.8" max="1.3" step="0.05" value={speed} disabled={disabled} onChange={(e) => setSpeed(Number(e.target.value))} className="min-w-0 flex-1" />
           <span className="w-10 shrink-0 text-right tabular-nums">{Number(speed).toFixed(2)}×</span>
         </label>
-        <label className="flex items-center gap-2">
-          <span className="w-12 shrink-0 font-medium text-muted">Volume</span>
-          <input type="range" min="0" max="2" step="0.05" value={volume} disabled={locked} onChange={(e) => setVolume(Number(e.target.value))} className="min-w-0 flex-1" />
-          <span className="w-10 shrink-0 text-right tabular-nums">{Math.round(volume * 100)}%</span>
-        </label>
+        {s.keys?.length ? (
+          <p className="text-muted"><span className="font-semibold text-ink">Volume:</span> follows its volume line (Clip tab)</p>
+        ) : (
+          <VolumeControl compact label="Volume" value={s.volume ?? 100} muted={!!s.muted} disabled={locked}
+            onChange={(v) => sound.clip(s, { volume: v })} onMute={(m) => sound.clip(s, { muted: m }, true)} />
+        )}
       </div>
     </li>
   );

@@ -1,8 +1,10 @@
 """Projects live in data/projects/<id>/ with their state in project.json.
 
-  project.json   the project and its sentences (see README → "Data model")
-  history.json   undo / redo snapshots
+  project.json   the project and its edit list: tracks of clips (see timeline.py, README → "Data model")
+  history/       undo / redo steps
   clips/         voice clips, one per (voice engine, voice, speed, Khmer text)
+  media/         files added in the editor (videos, pictures, music); the upload is source.*
+  proxy/         small copies of the videos for a smooth preview
   versions/vN/   the files of each export, plus snapshot.json to restore its edits
 """
 import json
@@ -15,11 +17,13 @@ from pathlib import Path
 import config
 import history
 import sentences
+import timeline
+import watermarks
 from errors import AppError
-from services import cover
+from services import cover, media
 
 _lock = threading.RLock()  # every read-modify-write of a project.json happens under this lock
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
 BUSY = ("uploaded", "processing", "generating", "exporting")
 
 
@@ -46,12 +50,11 @@ def clear_work(pid: str) -> None:
 
 def default_settings(voice: str = "female", speed: float = 1.0, background: str = "duck") -> dict:
     return {
-        "voice": voice, "speed": speed, "background": background, "background_volume": default_background_volume(background),
+        "voice": voice, "speed": speed, "background": background,  # the background's volume is its track's
         "subtitle_style": default_subtitle_style(),
         "cover": dict(cover.DEFAULT),
         "title": default_title(),
-        "background_cuts": [],  # parts of the background that are silent: [{"start", "end"}]
-        "video_cuts": [],  # parts removed from the video (and everything on them): [{"start", "end"}]
+        "export": timeline.default_export(),
     }
 
 
@@ -69,8 +72,9 @@ def default_subtitle_style() -> dict:
     }
 
 
-def default_background_volume(background: str) -> float:
-    return {"duck": config.DUCK_VOLUME, "separate": 1.0}.get(background, 0.0)
+def default_background_volume(background: str) -> int:
+    """The background track's volume (percent) for a background mode."""
+    return timeline.default_level(background)
 
 
 def create(name: str) -> dict:
@@ -95,9 +99,10 @@ def create(name: str) -> dict:
         "source_lang": "auto",
         "detected_lang": None,
         "settings": default_settings(),
-        "original_gaps": [],  # deleted sentences where the original audio plays at full volume
-        "next_id": 1,
-        "sentences": [],
+        "media": {},  # every file the edit list plays: "source" (the upload) and files added later
+        "timeline": timeline.empty(),  # the background's volume is set for its mode when the video arrives (timeline.init)
+        "next_id": 1,  # voice clips: s1, s2 …
+        "next_clip": 1,  # other clips: v1, b2, t3, a4 …
         "versions": [],
         "export_prefs": {"formats": ["mp4", "srt"], "audio_format": "mp3"},
         "history": dict(history.EMPTY_COUNTS),
@@ -117,9 +122,13 @@ def load(pid: str) -> dict:
             save(project)
         project["settings"].setdefault("subtitle_style", default_subtitle_style())  # added after version 2
         project["settings"].setdefault("cover", dict(cover.DEFAULT))
-        project["settings"].setdefault("background_cuts", [])
         project["settings"].setdefault("title", default_title())
-        project["settings"].setdefault("video_cuts", [])
+        project["settings"].setdefault("export", timeline.default_export())
+        timeline.ensure_tracks(project)
+        for t in project["timeline"]["tracks"]:  # fields added in version 4
+            for k, v in timeline.new_track(t["id"]).items():
+                if k != "clips":
+                    t.setdefault(k, v)
         return project
 
 
@@ -156,7 +165,9 @@ def edit(pid: str, fn, label: str, group: str | None = None):
         project = load(pid)
         before = history.snapshot(project)
         result = fn(project)
-        sentences.sort(project)
+        timeline.relink(project)
+        watermarks.fit_whole(project)
+        timeline.sort(project)
         if history.snapshot(project) != before:
             history.record(project_dir(pid), project, before, label, group)
             save(project)
@@ -216,11 +227,15 @@ def mark_interrupted() -> None:
             project["status"] = "error"
             project["error"] = {"message": "The server restarted while this video was being processed.", "hint": "Press “Try again”."}
             changed = True
+        if (project.get("batch") or {}).get("state") == "running":
+            project["batch"] = {**project["batch"], "state": "error", "error": {
+                "message": "The server restarted while sentences were being voiced.", "hint": "Run it again; what was finished is kept."}}
+            changed = True
         if (project.get("separation") or {}).get("state") == "running":
             project["separation"] = {"state": "error", "progress": 0.0, "message": "", "error": {
                 "message": "The server restarted while the original voice was being removed.", "hint": "Press “Try again”."}}
             changed = True
-        for s in project["sentences"]:
+        for s in sentences.items(project):
             if s["status"] == "regenerating":
                 sentences.refresh(s)
                 changed = True
@@ -229,14 +244,70 @@ def mark_interrupted() -> None:
 
 
 def _migrate(project: dict) -> None:
+    """Bring an older project.json up to SCHEMA_VERSION, one version at a time. A copy of the file as
+    it was is kept next to it (project.v<old>.json)."""
+    folder = project_dir(project["id"])
+    old = project.get("version", 1)
+    backup = folder / f"project.v{old}.json"
+    if not backup.exists():
+        shutil.copy2(folder / "project.json", backup)
+    if old < 2:
+        _migrate_v1(project)
+    if project["version"] < 3:
+        _migrate_v2(project, folder)
+    if project["version"] < 4:
+        _migrate_v3(project, folder)
+    if project["version"] < 5:
+        timeline.ensure_tracks(project)  # the watermark track; undo steps name tracks by id, so they stay
+        project["version"] = 5
+
+
+def _migrate_v3(project: dict, folder: Path) -> None:
+    """Version 3 kept volumes as fractions (1.0 = normal) and the background's level in the settings;
+    version 4 keeps integer percents on every track and clip (timeline.upgrade_v4). The undo steps
+    held the old volumes, so the history starts again; the old one is kept as history.v3/."""
+    timeline.upgrade_v4(project)
+    old = folder / "history"
+    if old.exists():
+        shutil.rmtree(folder / "history.v3", ignore_errors=True)
+        old.replace(folder / "history.v3")
+    history.reset(folder, project)
+    project["version"] = 4
+
+
+def _migrate_v2(project: dict, folder: Path) -> None:
+    """Version 2 kept the sentences in source time, and cuts, background parts and "original audio"
+    gaps as lists of times. Since version 3 it is an edit list: tracks of clips (timeline.migrate_state,
+    which writes version 4's volumes straight away). Its undo history can't go back past the upgrade;
+    the old one is kept as history.v2.json."""
+    video = project.get("video")
+    if video and not video.get("fps"):
+        try:
+            video["fps"] = media.probe(folder / video["file"]).get("fps") or 30
+        except AppError:
+            video["fps"] = 30
+    state = {
+        "sentences": project.pop("sentences", []), "settings": project.get("settings") or default_settings(),
+        "original_gaps": project.pop("original_gaps", []), "next_id": project.get("next_id", 1),
+    }
+    project.update(timeline.migrate_state(state, video))
+    project["media"] = {"source": timeline.source_media(video, project["name"])} if video else {}
+    old_history = folder / "history.json"
+    if old_history.exists():
+        old_history.replace(folder / "history.v2.json")
+    history.reset(folder, project)
+    project["version"] = 4
+
+
+def _migrate_v1(project: dict) -> None:
     """Version 1 (before the editor) kept `segments` with source/khmer text and one `output`."""
     opts = project.pop("options", None) or {}
     voice, speed, background = opts.get("voice", "female"), opts.get("speed", 1.0), opts.get("background", "duck")
     project["sentences"] = [
-        sentences.make(
+        {**sentences.make(
             seg["id"], seg["start"], seg["end"], original_text=seg.get("source", ""), khmer_text=seg.get("khmer", ""),
             voice=voice, speed=speed, shortened=seg.get("shortened", False),
-        )
+        ), "volume": 1.0}  # version 2 kept volumes as fractions (_migrate_v2 makes them percents)
         for seg in project.pop("segments", [])
     ]
     numbers = [int(s["id"][1:]) for s in project["sentences"] if s["id"][1:].isdigit()]
@@ -254,4 +325,4 @@ def _migrate(project: dict) -> None:
     project["export_prefs"] = {"formats": ["mp4_subs" if opts.get("burn_subtitles") else "mp4", "srt"], "audio_format": "mp3"}
     project["history"] = dict(history.EMPTY_COUNTS)
     project.setdefault("updated_at", project["created_at"])
-    project["version"] = SCHEMA_VERSION
+    project["version"] = 2

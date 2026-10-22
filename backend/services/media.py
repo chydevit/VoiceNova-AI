@@ -1,6 +1,9 @@
 """Thin wrappers around ffmpeg / ffprobe, plus WAV read/write for timeline building."""
+import functools
 import json
+import struct
 import subprocess
+import threading
 import wave
 from pathlib import Path
 
@@ -27,6 +30,28 @@ def run(args: list, what: str) -> str:
 
 def ffmpeg(*args, what: str) -> None:
     run([config.FFMPEG, "-hide_banner", "-loglevel", "error", "-y", *map(str, args)], what)
+
+
+def ffmpeg_progress(*args, seconds: float, on_progress, what: str) -> None:
+    """ffmpeg(), reporting how far it got (0–1 of `seconds` of output) as it goes."""
+    require_ffmpeg()
+    cmd = [config.FFMPEG, "-hide_banner", "-loglevel", "error", "-y", "-progress", "pipe:1", "-nostats", *map(str, args)]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
+    errors: list[str] = []
+    reader = threading.Thread(target=lambda: errors.extend(proc.stderr), daemon=True)  # never let stderr fill up and block
+    reader.start()
+    last = -1.0
+    for line in proc.stdout:
+        key, _, value = line.strip().partition("=")
+        if key == "out_time_us" and value.isdigit() and seconds > 0:
+            fraction = min(1.0, int(value) / 1e6 / seconds)
+            if fraction - last >= 0.01:
+                last = fraction
+                on_progress(fraction)
+    proc.wait()
+    reader.join(timeout=5)
+    if proc.returncode != 0:
+        raise AppError(f"{what} failed.", hint="The file may be damaged or in an unusual format.", detail="".join(errors)[-1500:])
 
 
 def probe(path: Path) -> dict:
@@ -57,9 +82,97 @@ def probe(path: Path) -> dict:
         "duration": round(duration, 3),
         "width": width,
         "height": height,
+        "fps": _fps(video),
         "vcodec": video.get("codec_name"),
         "acodec": audio.get("codec_name"),
     }
+
+
+@functools.lru_cache(maxsize=256)
+def _channels(path: str, mtime: float) -> int:
+    proc = subprocess.run(
+        [config.FFPROBE, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels", "-of", "csv=p=0", path],
+        capture_output=True, text=True, errors="replace",
+    )
+    try:
+        return max(1, int(proc.stdout.strip().split(",")[0]))
+    except ValueError:
+        return 2
+
+
+def audio_channels(path: Path) -> int:
+    """How many channels a file's first sound stream has (2 when it can't be told)."""
+    return _channels(str(path), Path(path).stat().st_mtime)
+
+
+def write_envelope(path: Path, values: np.ndarray, rate: int) -> Path:
+    """A volume envelope as a 32-bit float mono WAV (gains, 1.0 = as it is; may be above 1)."""
+    data = np.asarray(values, dtype="<f4").tobytes()
+    fmt = struct.pack("<HHIIHHH", 3, 1, rate, rate * 4, 4, 32, 0)  # IEEE float, mono
+    path.write_bytes(b"RIFF" + struct.pack("<I", 4 + 8 + len(fmt) + 8 + len(data)) + b"WAVE"
+                     + b"fmt " + struct.pack("<I", len(fmt)) + fmt + b"data" + struct.pack("<I", len(data)) + data)
+    return path
+
+
+def _fps(stream: dict) -> float:
+    """Frames per second (for stepping one frame in the editor), 30 when the file doesn't say."""
+    for key in ("avg_frame_rate", "r_frame_rate"):
+        num, _, den = str(stream.get(key) or "").partition("/")
+        try:
+            fps = float(num) / float(den or 1)
+        except (ValueError, ZeroDivisionError):
+            continue
+        if 1 <= fps <= 240:
+            return round(fps, 3)
+    return 30.0
+
+
+MEDIA_KINDS = {
+    "video": {".mp4", ".mov", ".mkv", ".webm", ".m4v"},
+    "image": {".png", ".jpg", ".jpeg", ".webp"},
+    "audio": {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac", ".opus"},
+}
+
+
+def media_kind(name: str) -> str | None:
+    ext = Path(name).suffix.lower()
+    return next((kind for kind, exts in MEDIA_KINDS.items() if ext in exts), None)
+
+
+def probe_media(path: Path, kind: str) -> dict:
+    """A file added in the editor: {kind, duration, width, height, fps, audio} (what applies to it)."""
+    require_ffmpeg()
+    proc = subprocess.run(
+        [config.FFPROBE, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
+        capture_output=True, text=True, errors="replace",
+    )
+    if proc.returncode != 0:
+        raise AppError("This file can't be read.", hint="It may be damaged, or in an unusual format.", detail=proc.stderr[-800:])
+    data = json.loads(proc.stdout or "{}")
+    streams = data.get("streams", [])
+    video = next((s for s in streams if s.get("codec_type") == "video" and not s.get("disposition", {}).get("attached_pic")), None)
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    duration = float(data.get("format", {}).get("duration") or 0)
+    if kind == "audio":
+        if not audio or duration <= 0:
+            raise AppError("This file has no sound.", hint="Add an MP3, WAV, M4A, OGG or FLAC file.")
+        return {"kind": "audio", "duration": round(duration, 3), "audio": True}
+    if not video:
+        raise AppError("This file has no picture.", hint="Add a video (MP4, MOV, MKV, WebM) or a picture (PNG, JPG, WebP).")
+    width, height = int(video.get("width") or 0), int(video.get("height") or 0)
+    if _rotation(video) in (90, 270):
+        width, height = height, width
+    if kind == "image":
+        return {"kind": "image", "width": width, "height": height}
+    if duration <= 0:
+        raise AppError("Couldn't read how long this video is.", hint="Re-export it as MP4 and try again.")
+    return {"kind": "video", "duration": round(duration, 3), "width": width, "height": height, "fps": _fps(video), "audio": bool(audio)}
+
+
+def poster(video: Path, duration: float, out: Path) -> Path:
+    """One small frame of a video, for its clips on the timeline and in the media list."""
+    ffmpeg("-ss", f"{min(0.5, duration / 3):.2f}", "-i", video, "-frames:v", 1, "-vf", f"scale=-2:{FILMSTRIP_HEIGHT * 2}", "-q:v", 5, out, what="Making a thumbnail")
+    return out
 
 
 def _rotation(stream: dict) -> int:
@@ -165,6 +278,25 @@ def waveform(src: Path, per_second: int = 20) -> dict:
     peaks = np.abs(samples[: n * size].reshape(n, size).astype(np.int32)).max(axis=1).astype(np.float32)
     top = max(float(np.percentile(peaks, 99.5)), 1.0)
     return {"per_second": per_second, "peaks": np.round(np.minimum(peaks / top, 1.0), 2).tolist()}
+
+
+PROXY_SIZE = 960  # the longest side of the preview copies, in pixels
+
+
+def make_proxy(src: Path, out: Path, fps: float) -> Path:
+    """A small copy of a video for the editor's preview: at most PROXY_SIZE pixels, a keyframe every
+    half second (so seeking and stepping frame by frame are instant) and MP4, which every browser plays."""
+    keyframes = max(1, round(fps / 2))
+    tmp = out.with_name(f".{out.name}")
+    ffmpeg(
+        "-i", src, "-map", "0:v:0", "-map", "0:a:0?",
+        "-vf", f"scale=w='min(iw,{PROXY_SIZE})':h='min(ih,{PROXY_SIZE})':force_original_aspect_ratio=decrease:force_divisible_by=2",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", 26, "-g", keyframes, "-keyint_min", keyframes, "-sc_threshold", 0, "-bf", 0,
+        "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-ac", 2, "-movflags", "+faststart", "-f", "mp4", tmp,
+        what="Making the preview copy",
+    )
+    tmp.replace(out)
+    return out
 
 
 def export_audio(voice: Path, out: Path) -> Path:

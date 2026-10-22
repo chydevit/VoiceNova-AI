@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { uploadVideo } from '../api.js';
 import { Button, Card, ErrorBox } from './ui.jsx';
+import { PresetSelect } from './editor/WatermarkPresets.jsx';
 
 const LANGUAGES = [
   ['auto', 'Detect automatically'], ['en', 'English'], ['zh', 'Chinese'], ['th', 'Thai'], ['vi', 'Vietnamese'],
@@ -11,6 +12,7 @@ export default function UploadZone({ health, onUploaded }) {
   const input = useRef(null);
   const [dragging, setDragging] = useState(false);
   const [sourceLang, setSourceLang] = useState('auto');
+  const [preset, setPreset] = useState(''); // the watermark it gets: '' the default one, 'none', or a preset
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState(null);
   const maxMb = health?.max_upload_mb || 500;
@@ -24,7 +26,7 @@ export default function UploadZone({ health, onUploaded }) {
     if (file.size > maxMb * 1024 * 1024) return setError({ message: `This video is larger than ${maxMb} MB.`, hint: 'Trim or compress it, then upload again.' });
     setProgress(0);
     try {
-      const project = await uploadVideo(file, sourceLang, setProgress);
+      const project = await uploadVideo(file, sourceLang, setProgress, preset);
       onUploaded(project);
     } catch (err) {
       setError(err);
@@ -71,6 +73,7 @@ export default function UploadZone({ health, onUploaded }) {
             {LANGUAGES.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
           </select>
         </label>
+        <PresetSelect value={preset} onChange={setPreset} disabled={uploading} />
         <p className="text-xs text-muted">Your video stays on this server, in <a href="#/projects" className="underline">My projects</a>, until you delete it.</p>
       </div>
       {error && <div className="mt-4"><ErrorBox error={error} /></div>}

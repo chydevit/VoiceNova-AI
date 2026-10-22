@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from './api.js';
+import AdWizard from './ads/AdWizard.jsx';
+import LibraryPage from './ads/LibraryPage.jsx';
 import ProjectPage from './components/ProjectPage.jsx';
 import ProjectsPage from './components/ProjectsPage.jsx';
 import SettingsPage from './components/SettingsPage.jsx';
@@ -7,12 +9,16 @@ import { IconButton, Notice } from './components/ui.jsx';
 import UploadZone from './components/UploadZone.jsx';
 import { setTheme, useTheme } from './lib/theme.js';
 
-// Pages: #/ upload · #/projects My projects · #/settings · #/p/<id> one project (progress, review or editor).
+// Pages: #/ upload · #/projects My projects · #/ad make an ad (#/ad/<id> one draft) · #/library Ad Library · #/settings ·
+// #/p/<id> one project (progress, review or editor).
 function route() {
   const hash = window.location.hash;
   const id = hash.match(/^#\/p\/([A-Za-z0-9]+)/)?.[1];
   if (id) return { page: 'project', id };
   if (hash.startsWith('#/projects')) return { page: 'projects' };
+  if (hash.startsWith('#/library')) return { page: 'library' };
+  const ad = hash.match(/^#\/ad(?:\/([A-Za-z0-9]+))?$/);
+  if (ad) return { page: 'ad', id: ad[1] || null };
   if (hash.startsWith('#/settings')) return { page: 'settings' };
   return { page: 'home' };
 }
@@ -76,7 +82,7 @@ export default function App() {
   const loadHealth = () => api.health().then(setHealth).catch(() => setHealth({ offline: true }));
   useEffect(() => { loadHealth(); }, []);
 
-  const nav = (page) => `rounded-lg px-2.5 py-1.5 text-sm font-medium whitespace-nowrap transition ${where.page === page ? 'bg-accent-soft text-accent-ink' : 'text-muted hover:bg-raised hover:text-ink'}`;
+  const nav = (page) => `rounded-lg px-2 py-1.5 text-sm font-medium whitespace-nowrap transition sm:px-2.5 ${where.page === page ? 'bg-accent-soft text-accent-ink' : 'text-muted hover:bg-raised hover:text-ink'}`;
 
   return (
     <div className="min-h-screen">
@@ -89,10 +95,13 @@ export default function App() {
               <span className="khmer hidden text-[11px] text-muted sm:block">បញ្ចូលសំឡេងខ្មែរដោយ AI</span>
             </span>
           </a>
-          <nav className="ml-auto flex items-center gap-1">
+          <nav className="ml-auto flex items-center gap-0.5 sm:gap-1">
             {health?.tts?.label && <span className="mr-2 hidden text-xs text-faint xl:block">Voice: {health.tts.label}</span>}
-            <a href="#/projects" className={nav('projects')}>My projects</a>
-            <a href="#" className={nav('home')}>New video</a>
+            {/* shorter words on a phone, so the header fits */}
+            <a href="#/projects" className={nav('projects')}><span className="hidden sm:inline">My projects</span><span className="sm:hidden">Projects</span></a>
+            <a href="#/library" className={nav('library')}><span className="hidden sm:inline">Ad Library</span><span className="sm:hidden">Library</span></a>
+            <a href="#" className={nav('home')}><span className="hidden sm:inline">New video</span><span className="sm:hidden">+ Video</span></a>
+            <a href="#/ad" className={nav('ad')}><span className="hidden sm:inline">New ad</span><span className="sm:hidden">+ Ad</span></a>
             <a href="#/settings" title="Settings — API keys and voices" aria-label="Settings"
               className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${where.page === 'settings' ? 'bg-accent-soft text-accent-ink' : 'text-muted hover:bg-raised hover:text-ink'}`}>
               <svg viewBox="0 0 24 24" className="h-4.5 w-4.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" /></svg>
@@ -111,6 +120,8 @@ export default function App() {
         <main className="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:py-10">
           {where.page !== 'settings' && <SetupWarnings health={health} />}
           {where.page === 'projects' && <ProjectsPage />}
+          {where.page === 'library' && <LibraryPage />}
+          {where.page === 'ad' && <AdWizard id={where.id} />}
           {where.page === 'settings' && <SettingsPage onSaved={loadHealth} />}
           {where.page === 'home' && (
             <div className="mx-auto max-w-3xl space-y-8">
@@ -136,6 +147,14 @@ export default function App() {
                   </li>
                 ))}
               </ol>
+              <a href="#/ad" className="flex items-center gap-3 rounded-xl border border-line bg-panel p-3 transition hover:bg-raised">
+                <span className="text-2xl" aria-hidden="true">📣</span>
+                <span className="min-w-0 flex-1 leading-tight">
+                  <span className="block text-sm font-semibold">Selling something? Make an ad from scratch</span>
+                  <span className="khmer text-xs text-muted">បង្កើតវីដេអូផ្សាយពាណិជ្ជកម្ម ជាមួយសំឡេងខ្មែរ AI</span>
+                </span>
+                <span className="text-muted" aria-hidden="true">→</span>
+              </a>
             </div>
           )}
         </main>

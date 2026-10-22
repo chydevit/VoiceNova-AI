@@ -18,7 +18,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 APP="$HERE/build/Khmer Voice AI.app"
-VERSION="${VERSION:-1.2.0}"
+VERSION="${VERSION:-1.3.0}"
 MODE="${1:-}"
 ARCH="${ARCH:-$(uname -m)}"                         # arm64 (Apple silicon) or x86_64 (Intel)
 LABEL="$([ "$ARCH" = arm64 ] && echo arm64 || echo x64)"  # as in the download names

@@ -16,9 +16,14 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+import api_adverts
 import api_editor
+import api_library
 import api_projects
 import api_settings
+import api_translate
+import api_view
+import api_watermarks
 import config
 import store
 from errors import AppError
@@ -131,6 +136,11 @@ def health():
 app.include_router(api_projects.router)
 app.include_router(api_editor.router)
 app.include_router(api_settings.router)
+app.include_router(api_library.router)
+app.include_router(api_adverts.router)
+app.include_router(api_view.router)
+app.include_router(api_translate.router)
+app.include_router(api_watermarks.router)
 
 
 class FrontendFiles(StaticFiles):

@@ -1,47 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
-import { formatTime } from '../../api.js';
-import { drawSubtitle, drawTitle, loadSubtitleFont } from '../../lib/subtitleImages.js';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { drawSubtitle, drawTextClip, drawTitle, loadSubtitleFont, measureTextClip } from '../../lib/subtitleImages.js';
+import { canvasSize, clipAt, lineAt, pictureRect, subtitleLines, timecode, trackOf } from '../../lib/timeline.js';
+import { SAFE_AREA, drawWatermarks, isPortrait, loadImage, logoUrl, placeRendered, renderWatermark, snapBox } from '../../lib/watermark.js';
 import { IconButton } from '../ui.jsx';
-import { gainAt } from '../../lib/background.js';
-
-const inGap = (gaps, t) => gaps.some((g) => t >= g.start && t <= g.end); // deleted sentence: original audio at full volume
-// Levels at time t, as they will sound in the export: the original audio (the video's own sound)
-// and the voice-free music track (when the original voice has been removed).
-function levels(p, t) {
-  const left = gainAt(p.settings.background_cuts || [], t); // background volume parts
-  const { original, music } = uncut(p, t);
-  return { original: original * left, music: music * left };
-}
-
-function uncut(p, t) {
-  const { background, background_volume: volume } = p.settings;
-  const gap = inGap(p.original_gaps, t);
-  if (background === 'separate' && p.background_url) return { original: gap ? 1 : 0, music: gap ? 0 : Math.min(1, volume) };
-  if (gap) return { original: 1, music: 0 };
-  if (background === 'replace') return { original: 0, music: 0 };
-  if (background === 'separate') return { original: Math.min(1, volume) * 0.3, music: 0 }; // stand-in until the track is ready
-  return { original: Math.min(1, volume), music: 0 };
-}
-
-// The subtitle on screen at time t, with the same timing rules as the export (backend subtitles.spans).
-function subtitleAt(sentences, duration, t) {
-  const shown = sentences.filter((s) => (s.subtitle_text ?? s.khmer_text).trim());
-  for (let i = 0; i < shown.length; i += 1) {
-    const s = shown[i];
-    const end = Math.min(Math.max(s.end, s.start + 0.5), shown[i + 1]?.start ?? duration, duration);
-    if (t >= s.start && t < end) return { id: s.id, text: s.subtitle_text ?? s.khmer_text, original: s.original_text };
-    if (s.start > t) break;
-  }
-  return null;
-}
-
-// The part of the <video> box the picture fills (object-fit: contain).
-function pictureBox(el, width, height) {
-  const scale = Math.min(el.clientWidth / width, el.clientHeight / height);
-  const w = width * scale;
-  const h = height * scale;
-  return { left: (el.clientWidth - w) / 2, top: (el.clientHeight - h) / 2, width: w, height: h };
-}
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 const r1 = (v) => Math.round(v * 10) / 10;
@@ -98,10 +59,10 @@ const SAMPLE = { id: 'sample', text: 'ឧទាហរណ៍អក្សររត
 
 // The box around the subtitle on the preview while styling it: drag it to move the subtitle.
 // Snaps to the middle. `onMove({x, margin})` gets the new position (% of the picture).
-function SubtitleHandle({ bounds, box, picture, style, onMove }) {
+function SubtitleHandle({ bounds, box, canvas, style, onMove }) {
   const drag = useRef(null);
   if (!bounds) return null;
-  const k = box.width / picture.width;
+  const k = box.width / canvas.width;
   const start = (e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -128,192 +89,345 @@ function SubtitleHandle({ bounds, box, picture, style, onMove }) {
   );
 }
 
-// The video with the Khmer voice playing over it. `control` (from EditorPage) holds the
-// <video> ref, the VoicePreview and an optional time to pause at (for ▶ on one sentence).
-export default function Player({ project, sentences, control, onTime, time, subtitleStyle, showSubtitles, setShowSubtitles, numbers, onStep, cover, editingCover, onCoverChange, title, onSubtitleMove }) {
+// The box around the selected text clip on the preview (paused): drag it to place the text, double-click
+// it to edit the words. Snaps to the middle. Positions are % of the picture (the text's middle).
+function TextHandle({ clip, box, canvas, onMove, onDone, onEdit }) {
+  const drag = useRef(null);
+  const bounds = measureTextClip(clip, canvas.width, canvas.height);
+  if (!bounds) return null;
+  const k = box.width / canvas.width;
+  const start = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    drag.current = { x0: e.clientX, y0: e.clientY, x: clip.x ?? 50, y: clip.y ?? 50, moved: false, last: null };
+  };
+  const move = (e) => {
+    const d = drag.current;
+    if (!d || (!d.moved && Math.abs(e.clientX - d.x0) + Math.abs(e.clientY - d.y0) < 3)) return;
+    let x = clamp(d.x + ((e.clientX - d.x0) / box.width) * 100, 0, 100);
+    let y = clamp(d.y + ((e.clientY - d.y0) / box.height) * 100, 0, 100);
+    if (Math.abs(x - 50) < 1.5) x = 50;
+    if (Math.abs(y - 50) < 1.5) y = 50;
+    d.moved = true;
+    d.last = { x: Math.round(x * 2) / 2, y: Math.round(y * 2) / 2 };
+    onMove(d.last);
+  };
+  const up = () => {
+    const d = drag.current;
+    drag.current = null;
+    if (d?.moved && d.last) onDone(d.last);
+  };
+  return (
+    <div role="button" tabIndex={-1} title="Drag to place the text · double-click to edit it"
+      onPointerDown={start} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { drag.current = null; }} onDoubleClick={onEdit}
+      className="absolute cursor-move rounded outline-2 outline-dashed outline-violet-400 hover:bg-white/10"
+      style={{ left: box.left + bounds.left * k, top: box.top + bounds.top * k, width: bounds.width * k, height: bounds.height * k }}>
+      <span className="pointer-events-none absolute -top-6 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-violet-500 px-1.5 py-0.5 text-[10px] font-semibold text-white shadow">✥ drag · double-click to edit</span>
+    </div>
+  );
+}
+
+// The box around the selected watermark on the preview (paused): drag it anywhere; it snaps to the
+// edges (at its margin) and the middle, with guide lines, and to the nine positions there.
+function WatermarkHandle({ clip, box, canvas, media, onMove, onDone }) {
+  const drag = useRef(null);
+  const [guides, setGuides] = useState([]);
+  const r = renderWatermark(clip, canvas.width, canvas.height, media);
+  if (!r || clip.kind === 'tiled') return null;
+  const k = box.width / canvas.width;
+  const at = placeRendered(clip, r, canvas.width, canvas.height);
+  const start = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const logo = { x: at.x + r.canvas.width / 2 - r.size.width / 2, y: at.y + r.canvas.height / 2 - r.size.height / 2 };
+    drag.current = { x0: e.clientX, y0: e.clientY, logo, moved: false, last: null };
+  };
+  const move = (e) => {
+    const d = drag.current;
+    if (!d || (!d.moved && Math.abs(e.clientX - d.x0) + Math.abs(e.clientY - d.y0) < 3)) return;
+    d.moved = true;
+    const moved = { x: d.logo.x + (e.clientX - d.x0) / k, y: d.logo.y + (e.clientY - d.y0) / k, width: r.size.width, height: r.size.height };
+    const snapped = snapBox(moved, clip, canvas.width, canvas.height, 10 / k);
+    setGuides(snapped.guides);
+    const cx = clamp(((snapped.x + r.size.width / 2) / canvas.width) * 100, 0, 100);
+    const cy = clamp(((snapped.y + r.size.height / 2) / canvas.height) * 100, 0, 100);
+    d.last = snapped.anchor ? { anchor: snapped.anchor } : { anchor: 'free', x: Math.round(cx * 10) / 10, y: Math.round(cy * 10) / 10 };
+    onMove(d.last);
+  };
+  const up = () => {
+    const d = drag.current;
+    drag.current = null;
+    setGuides([]);
+    if (d?.moved && d.last) onDone(d.last);
+  };
+  return (
+    <>
+      <div role="button" tabIndex={-1} title="Drag to place the watermark (it snaps to the edges and the middle)"
+        onPointerDown={start} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { drag.current = null; setGuides([]); }}
+        className="absolute z-[6] cursor-move rounded outline-2 outline-dashed outline-accent hover:bg-white/10"
+        style={{ left: box.left + at.x * k, top: box.top + at.y * k, width: r.canvas.width * k, height: r.canvas.height * k }}>
+        <span className="pointer-events-none absolute -top-6 left-1/2 -translate-x-1/2 whitespace-nowrap rounded bg-accent px-1.5 py-0.5 text-[10px] font-semibold text-white shadow">✥ drag the watermark</span>
+      </div>
+      {guides.map((g, i) => (
+        <span key={i} className="pointer-events-none absolute z-[6] bg-accent/80"
+          style={g.x !== undefined ? { left: box.left + g.x * k, top: box.top, width: 1, height: box.height } : { top: box.top + g.y * k, left: box.left, height: 1, width: box.width }} />
+      ))}
+    </>
+  );
+}
+
+// Where TikTok, Reels and Shorts put their buttons and captions on a 9:16 video.
+function SafeArea({ box }) {
+  const s = SAFE_AREA;
+  return (
+    <div className="pointer-events-none absolute z-[5]" style={{ left: box.left, top: box.top, width: box.width, height: box.height }}>
+      <div className="absolute border-2 border-dashed border-amber-300/80" style={{ left: `${s.left}%`, top: `${s.top}%`, right: `${s.right}%`, bottom: `${s.bottom}%` }} />
+      <span className="absolute whitespace-nowrap rounded bg-amber-400/90 px-1 text-[9px] font-semibold leading-3 text-black" style={{ left: `${s.left}%`, top: `calc(${s.top}% + 2px)` }} title="TikTok, Reels and Shorts cover the rest with their buttons and captions">safe area</span>
+    </div>
+  );
+}
+
+// Typing straight into the subtitle on the preview (after a double-click on it).
+function InlineSubtitle({ line, bounds, box, canvas, onSave, onCancel }) {
+  const [text, setText] = useState(line.text);
+  const done = useRef(false);
+  const k = box.width / canvas.width;
+  const finish = (save) => {
+    if (done.current) return;
+    done.current = true;
+    if (save && text.trim() && text.trim() !== line.text) onSave(text.trim()); else onCancel();
+  };
+  return (
+    <textarea autoFocus lang="km" value={text} rows={2} aria-label="Edit the subtitle"
+      onChange={(e) => setText(e.target.value)} onBlur={() => finish(true)}
+      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); finish(true); } if (e.key === 'Escape') { e.preventDefault(); finish(false); } }}
+      className="khmer absolute z-20 resize-none rounded-md border-2 border-accent bg-black/80 p-1 text-center text-white shadow-lg focus:outline-none"
+      style={{ left: box.left + Math.max(0, bounds.left - 20) * k, top: box.top + bounds.top * k - 8, width: Math.max(200, Math.min(canvas.width, bounds.width + 40) * k), minHeight: bounds.height * k + 16, fontSize: Math.max(13, bounds.height * k * 0.38) }} />
+  );
+}
+
+const Svg = ({ d, fill = false, className = 'h-4 w-4' }) => (
+  <svg viewBox="0 0 24 24" className={className} fill={fill ? 'currentColor' : 'none'} stroke={fill ? 'none' : 'currentColor'} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>
+);
+
+// The preview: the edit list played by control.playback (lib/playback.js) on a canvas the shape
+// of the export, with the subtitles and title drawn exactly as they'll be burned in.
+export default function Player({ project, sentences, tracks, control, time, playing, subtitleStyle, showSubtitles, setShowSubtitles, numbers, onStep, cover, editingCover, onCoverChange, title, onSubtitleMove,
+  selectedText, textDraft, onTextMove, onTextCommit, onEditText, onSubtitleEdit, selectedWatermark, onWatermarkMove, onWatermarkCommit, showSafeArea }) {
   const style = subtitleStyle || project.settings.subtitle_style;
   const shownTitle = title || project.settings.title;
-  const titleCanvas = useRef(null);
   const styling = !!onSubtitleMove; // the Subtitles tab is open: show a sample line and let it be dragged
-  const latest = useRef({ sentences, project, style, showSubtitles, styling });
-  latest.current = { sentences, project, style, showSubtitles, styling };
+  const { playback } = control;
+  const canvas = useMemo(() => canvasSize(project), [project]);
+  const fit = project.settings.export?.fit || 'fit';
+  const fps = project.video.fps || 30;
+  const lines = useMemo(() => subtitleLines(tracks), [tracks]);
+  // the text clips that are drawn (the one being edited as it is being edited)
+  const texts = useMemo(() => {
+    const text = trackOf(tracks, 'text');
+    if (text.hidden) return [];
+    return text.clips.filter((c) => !c.skipped).map((c) => (textDraft?.id === c.id ? { ...c, ...textDraft.fields } : c));
+  }, [tracks, textDraft]);
+  const latest = useRef({});
+  latest.current = { lines, style, showSubtitles, styling, texts, tracks, media: project.media };
+  const wmCanvas = useRef(null);
+  const wmDrawn = useRef(null);
+  const [editingLine, setEditingLine] = useState(null);
+  const shownLine = useRef(null);
+  const textCanvas = useRef(null);
+  const textsDrawn = useRef(null);
   const [subBounds, setSubBounds] = useState(null);
-  const music = useRef(null);
-  const subs = useRef(null);
-  const drawn = useRef('');
-  const [box, setBox] = useState(null);
+  const [box, setBox] = useState(null); // the canvas, in CSS pixels inside the stage
   const [fontReady, setFontReady] = useState(false);
-  const [playing, setPlaying] = useState(false);
   const stage = useRef(null);
-  const { width, height, duration } = project.video;
+  const els = { a: useRef(null), b: useRef(null), image: useRef(null), stem: useRef(null) };
+  const subs = useRef(null);
+  const titleCanvas = useRef(null);
+  const drawn = useRef('');
+  const duration = playback.duration;
 
   useEffect(() => {
     let live = true;
     loadSubtitleFont(style).then(() => { if (live) setFontReady(style.font || true); });
     return () => { live = false; };
   }, [style.font]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Keep the subtitle canvas exactly over the picture.
+  const textFonts = [...new Set(texts.map((c) => c.style?.font).filter(Boolean))].join('|');
   useEffect(() => {
-    const v = control.video.current;
-    if (!v) return undefined;
-    const measure = () => setBox(pictureBox(v, width, height));
+    let live = true;
+    Promise.all(textFonts.split('|').filter(Boolean).map((f) => loadSubtitleFont({ font: f }))).then(() => { if (live) setFontReady(`${textFonts}#`); });
+    return () => { live = false; };
+  }, [textFonts]);
+
+  useLayoutEffect(() => {
+    playback.attach({ a: els.a.current, b: els.b.current, image: els.image.current, stem: els.stem.current });
+    return () => playback.detach();
+  }, [playback]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keep the canvas as large as the stage allows, in the export's shape.
+  useLayoutEffect(() => {
+    const el = stage.current;
+    const measure = () => {
+      const k = Math.min(el.clientWidth / canvas.width, el.clientHeight / canvas.height);
+      const w = canvas.width * k;
+      const h = canvas.height * k;
+      setBox({ left: (el.clientWidth - w) / 2, top: (el.clientHeight - h) / 2, width: w, height: h });
+    };
     measure();
     const ro = new ResizeObserver(measure);
-    ro.observe(v);
+    ro.observe(el);
     return () => ro.disconnect();
-  }, [control, width, height]);
-  const { video, preview, stopAt } = control;
+  }, [canvas.width, canvas.height]);
 
-  useEffect(() => {
-    const v = video.current;
-    if (!v) return undefined;
-    let frame = 0;
-    // Draw the subtitle for time t (only when it changes).
-    const caption = (t) => {
-      const c = subs.current;
-      if (!c) return;
-      const { sentences: items, style: st, showSubtitles: on, styling: sample } = latest.current;
-      const item = on ? subtitleAt(items, duration, t) || (sample ? SAMPLE : null) : null;
-      const key = item ? `${item.id}|${item.text}|${item.original}|${JSON.stringify(st)}` : '';
-      if (key === drawn.current) return;
-      drawn.current = key;
-      setSubBounds(drawSubtitle(c.getContext('2d'), item, c.width, c.height, st));
-    };
-    control.redrawSubtitle = () => { drawn.current = '#'; caption(v.currentTime); };
-    const follow = () => { // keep the music track on the video's clock
-      const m = music.current;
-      if (!m || !m.src) return;
-      if (Math.abs(m.currentTime - v.currentTime) > 0.15) m.currentTime = v.currentTime;
-      if (m.paused && !v.paused) m.play().catch(() => {});
-    };
-    const loop = () => {
-      const t = v.currentTime;
-      const { sentences: items, project: p } = latest.current;
-      if (stopAt.current !== null && t >= stopAt.current) {
-        stopAt.current = null;
-        v.pause();
-        return;
-      }
-      // Parts removed from the video are skipped, as in the export.
-      const removedPart = (p.settings.video_cuts || []).find((c) => t >= c.start && t < c.end - 0.02);
-      if (removedPart) {
-        v.currentTime = removedPart.end;
-        frame = requestAnimationFrame(loop);
-        return;
-      }
-      const level = levels(p, t);
-      v.volume = level.original;
-      if (music.current) music.current.volume = level.music;
-      follow();
-      caption(t);
-      preview.tick(t, items);
-      frame = requestAnimationFrame(loop);
-    };
-    const start = () => { setPlaying(true); cancelAnimationFrame(frame); frame = requestAnimationFrame(loop); };
-    const stop = () => { setPlaying(!v.paused); cancelAnimationFrame(frame); preview.stop(); music.current?.pause(); };
-    const seeking = () => {
-      preview.stop();
-      if (music.current?.src) music.current.currentTime = v.currentTime;
-      if (!v.paused) start();
-    };
-    const time = () => { onTime(v.currentTime); caption(v.currentTime); };
-    v.addEventListener('playing', start);
-    v.addEventListener('pause', stop);
-    v.addEventListener('waiting', stop);
-    v.addEventListener('ended', stop);
-    v.addEventListener('seeking', seeking);
-    v.addEventListener('timeupdate', time);
-    return () => {
-      stop();
-      v.removeEventListener('playing', start);
-      v.removeEventListener('pause', stop);
-      v.removeEventListener('waiting', stop);
-      v.removeEventListener('ended', stop);
-      v.removeEventListener('seeking', seeking);
-      v.removeEventListener('timeupdate', time);
-    };
-  }, [video, preview, stopAt, onTime, control, duration]);
+  // Draw the subtitle for time t (only when it changes).
+  const caption = (t) => {
+    const c = subs.current;
+    if (!c) return;
+    const { lines: ls, style: st, showSubtitles: on, styling: sample } = latest.current;
+    const line = on ? lineAt(ls, t) || (sample ? SAMPLE : null) : null;
+    const key = line ? `${line.id}|${line.text}|${line.original}|${JSON.stringify(st)}` : '';
+    if (key === drawn.current) return;
+    drawn.current = key;
+    shownLine.current = line?.id === 'sample' ? null : line;
+    setSubBounds(drawSubtitle(c.getContext('2d'), line, c.width, c.height, st));
+  };
 
-  // Redraw when the style, the text or the toggle changes (also while paused).
-  useEffect(() => { control.redrawSubtitle?.(); }, [control, style, sentences, showSubtitles, fontReady, box, styling]);
+  // Draw the text clips on screen at time t, every frame (they animate in and out).
+  const drawTexts = (t) => {
+    const c = textCanvas.current;
+    if (!c) return;
+    const on = latest.current.texts.filter((x) => t >= x.start && t < x.end);
+    if (!on.length && textsDrawn.current === '') return; // nothing then, nothing now
+    textsDrawn.current = on.length ? 'some' : '';
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, c.width, c.height);
+    for (const x of on) drawTextClip(ctx, x, c.width, c.height, t);
+  };
+  useEffect(() => playback.onFrame(drawTexts), [playback]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The watermarks on screen at time t, every frame (they may animate); drawn again once a logo loads.
+  const drawMarks = (t) => {
+    const c = wmCanvas.current;
+    if (!c) return;
+    const { tracks: tr, media } = latest.current;
+    const any = trackOf(tr, 'watermark')?.clips.length > 0;
+    if (!any && wmDrawn.current === '') return;
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, c.width, c.height);
+    wmDrawn.current = any ? 'some' : '';
+    if (any && !drawWatermarks(ctx, tr, media, t, c.width, c.height)) {
+      const waiting = trackOf(tr, 'watermark').clips.map((w) => logoUrl(w, media)).filter(Boolean);
+      Promise.allSettled([...waiting.map(loadImage), document.fonts?.ready]).then(() => setTimeout(() => drawMarks(playback.t), 30));
+    }
+  };
+  useEffect(() => playback.onFrame(drawMarks), [playback]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { wmDrawn.current = null; drawMarks(playback.t); }, [tracks, project.media, fontReady, box]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { textsDrawn.current = null; drawTexts(playback.t); }, [texts, fontReady, box]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => playback.subscribe(({ t }) => caption(t)), [playback]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { drawn.current = '#'; caption(playback.t); }, [lines, style, showSubtitles, fontReady, box, styling]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const c = titleCanvas.current;
     if (c) drawTitle(c.getContext('2d'), shownTitle, c.width, c.height);
-  }, [shownTitle, fontReady, box]);
+  }, [shownTitle, fontReady, box, canvas]);
 
-  const { settings } = project;
-  const separate = settings.background === 'separate';
-  const toggle = () => {
-    const v = video.current;
-    if (!v) return;
-    stopAt.current = null;
-    if (v.paused) v.play().catch(() => {}); else v.pause();
-  };
   // ⏮ / ⏭: the previous / next sentence from the playhead.
   const step = (dir) => {
-    const t = video.current?.currentTime ?? 0;
+    const t = playback.t;
     const target = dir > 0 ? sentences.find((x) => x.start > t + 0.05) : [...sentences].reverse().find((x) => x.start < t - 0.3);
     if (target) onStep(target);
   };
+
+  const video = trackOf(tracks, 'video');
+  const clip = clipAt(video.clips, time);
+  const sourceOnScreen = clip?.type === 'video' && clip.media === 'source';
+  const picture = box && pictureRect(box, project.video.width, project.video.height, fit); // the upload, inside the canvas
   const current = sentences.find((x) => time >= x.start && time < x.end);
-  const inRemoved = (settings.video_cuts || []).some((c) => time >= c.start && time < c.end - 0.02);
+  const { settings } = project;
+  const separate = settings.background === 'separate';
+  const bgTrack = trackOf(tracks, 'background');
+  const level = bgTrack.muted ? 'muted' : `${bgTrack.volume ?? 100}%${bgTrack.duck?.on ? ` · ${bgTrack.duck.level}% under the voice` : ''}`;
   const background = settings.background === 'replace' ? 'original audio off'
-    : separate ? (project.background_url ? `music ${Math.round(settings.background_volume * 100)}% · original voice removed` : 'original quiet until its voice is removed')
-      : `original ${Math.round(settings.background_volume * 100)}%`;
+    : separate ? (project.background_url ? `music ${level} · original voice removed` : 'original quiet until its voice is removed')
+      : `original ${level}`;
+  const objectFit = fit === 'fill' ? 'object-cover' : 'object-contain';
+  const layer = box ? { left: box.left, top: box.top, width: box.width, height: box.height } : { display: 'none' };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* small screens: the video's own shape (portrait stays tall); desktop: fills the panel */}
-      <div ref={stage} style={{ '--ar': `${width} / ${height}` }}
-        className="relative max-h-[65vh] w-full bg-black [aspect-ratio:var(--ar)] lg:max-h-none lg:min-h-0 lg:flex-1 lg:[aspect-ratio:auto]">
-        <video ref={video} src={project.source_url} playsInline preload="auto" onClick={toggle} className="absolute inset-0 h-full w-full cursor-pointer" />
-        {box && <CoverBox cover={cover || project.settings.cover} box={box} editing={editingCover} onChange={onCoverChange} />}
-        {box && (
-          <canvas ref={titleCanvas} width={width} height={height} aria-hidden="true" className="pointer-events-none absolute"
-            style={{ left: box.left, top: box.top, width: box.width, height: box.height }} />
+      {/* small screens: the canvas's own shape (portrait stays tall); desktop: fills the panel */}
+      <div ref={stage} style={{ '--ar': `${canvas.width} / ${canvas.height}` }}
+        className="relative max-h-[65vh] w-full overflow-hidden bg-neutral-900 [aspect-ratio:var(--ar)] lg:max-h-none lg:min-h-0 lg:flex-1 lg:[aspect-ratio:auto]">
+        <div className="absolute bg-black" style={layer} onClick={() => playback.toggle()}>
+          <video ref={els.a} playsInline preload="auto" className={`absolute inset-0 h-full w-full ${objectFit}`} />
+          <video ref={els.b} playsInline preload="auto" className={`absolute inset-0 h-full w-full ${objectFit}`} />
+          <img ref={els.image} alt="" className={`absolute inset-0 h-full w-full ${objectFit}`} style={{ visibility: 'hidden' }} />
+        </div>
+        {picture && sourceOnScreen && !video.hidden && (
+          <CoverBox cover={cover || project.settings.cover} editing={editingCover} onChange={onCoverChange}
+            box={{ left: box.left + picture.left, top: box.top + picture.top, width: picture.width, height: picture.height }} />
         )}
-        {box && (
-          <canvas ref={subs} width={width} height={height} aria-hidden="true" className="pointer-events-none absolute"
-            style={{ left: box.left, top: box.top, width: box.width, height: box.height }} />
+        <canvas ref={titleCanvas} width={canvas.width} height={canvas.height} aria-hidden="true" className="pointer-events-none absolute" style={layer} />
+        <canvas ref={textCanvas} width={canvas.width} height={canvas.height} aria-hidden="true" className="pointer-events-none absolute" style={layer} />
+        <canvas ref={subs} width={canvas.width} height={canvas.height} aria-hidden="true" className="pointer-events-none absolute" style={layer} />
+        <canvas ref={wmCanvas} width={canvas.width} height={canvas.height} aria-hidden="true" className="pointer-events-none absolute" style={layer} />
+        {box && showSafeArea && isPortrait(canvas.width, canvas.height) && <SafeArea box={box} />}
+        {box && !playing && selectedWatermark && time >= selectedWatermark.start && time < selectedWatermark.end && !selectedWatermark.skipped && (
+          <WatermarkHandle clip={selectedWatermark} box={box} canvas={canvas} media={project.media}
+            onMove={(patch) => onWatermarkMove(selectedWatermark, patch)} onDone={(patch) => onWatermarkCommit(selectedWatermark, patch)} />
+        )}
+        {box && !playing && !styling && subBounds && shownLine.current && !editingLine && onSubtitleEdit && (
+          <div role="button" tabIndex={-1} title="Double-click to edit this subtitle" onDoubleClick={() => setEditingLine(shownLine.current)}
+            className="absolute cursor-text rounded hover:outline-1 hover:outline-dashed hover:outline-white/50"
+            style={{ left: box.left + subBounds.left * (box.width / canvas.width), top: box.top + subBounds.top * (box.width / canvas.width), width: subBounds.width * (box.width / canvas.width), height: subBounds.height * (box.width / canvas.width) }} />
+        )}
+        {box && editingLine && subBounds && (
+          <InlineSubtitle line={editingLine} bounds={subBounds} box={box} canvas={canvas}
+            onSave={(text) => { onSubtitleEdit(editingLine.id, text); setEditingLine(null); }} onCancel={() => setEditingLine(null)} />
+        )}
+        {box && !playing && selectedText && time >= selectedText.start && time < selectedText.end && !selectedText.skipped && (
+          <TextHandle clip={texts.find((x) => x.id === selectedText.id) || selectedText} box={box} canvas={canvas}
+            onMove={(pos) => onTextMove(selectedText.id, pos)} onDone={(pos) => onTextCommit(selectedText.id, pos)} onEdit={() => onEditText(selectedText.id)} />
         )}
         {box && styling && showSubtitles && !playing && (
-          <SubtitleHandle bounds={subBounds} box={box} picture={{ width, height }} style={style} onMove={onSubtitleMove} />
+          <SubtitleHandle bounds={subBounds} box={box} canvas={canvas} style={style} onMove={onSubtitleMove} />
         )}
-        {inRemoved && !playing && (
-          <span className="pointer-events-none absolute left-3 top-3 rounded-md bg-red-600 px-2 py-1 text-xs font-semibold text-white shadow">✂ Removed from the video</span>
+        {clip?.skipped && !playing && (
+          <span className="pointer-events-none absolute left-3 top-3 rounded-md bg-red-600 px-2 py-1 text-xs font-semibold text-white shadow">⤼ Skipped — left out of the export</span>
+        )}
+        {!clip && !playing && duration > 0 && time < duration && (
+          <span className="pointer-events-none absolute left-3 top-3 rounded-md bg-neutral-700 px-2 py-1 text-xs font-semibold text-white shadow">Empty — black in the export</span>
         )}
         {!playing && (
-          <button type="button" onClick={toggle} aria-label="Play"
+          <button type="button" onClick={() => playback.play()} aria-label="Play"
             className="absolute left-1/2 top-1/2 flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white backdrop-blur transition hover:bg-black/70">
             <svg viewBox="0 0 24 24" className="ml-1 h-6 w-6" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l13-7.5z" /></svg>
           </button>
         )}
       </div>
-      {separate && project.background_url && <audio ref={music} src={project.background_url} preload="auto" className="hidden" />}
+      <audio ref={els.stem} preload="auto" className="hidden" />
 
-      <div className="flex items-center gap-1.5 border-t border-line px-2 py-1.5 sm:gap-2 sm:px-3">
-        <IconButton label="Previous sentence" onClick={() => step(-1)}>
-          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z" /></svg>
-        </IconButton>
-        <button type="button" onClick={toggle} aria-label={playing ? 'Pause' : 'Play'} title={playing ? 'Pause (Space)' : 'Play (Space)'}
+      <div className="flex items-center gap-1 border-t border-line px-2 py-1.5 sm:gap-1.5 sm:px-3">
+        <IconButton label="Previous sentence" onClick={() => step(-1)}><Svg fill d="M6 5h2v14H6zM20 5v14L9 12z" /></IconButton>
+        <IconButton label="Back one frame (←)" onClick={() => playback.step(-1)}><Svg d="M15 6l-6 6 6 6M8 6v12" /></IconButton>
+        <button type="button" onClick={() => playback.toggle()} aria-label={playing ? 'Pause' : 'Play'} title={playing ? 'Pause (Space)' : 'Play (Space)'}
           className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent text-white shadow-sm hover:bg-accent-hover">
           {playing
             ? <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden="true"><path d="M7 5h4v14H7zM13 5h4v14h-4z" /></svg>
             : <svg viewBox="0 0 24 24" className="ml-0.5 h-4 w-4" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l13-7.5z" /></svg>}
         </button>
-        <IconButton label="Next sentence" onClick={() => step(1)}>
-          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z" /></svg>
-        </IconButton>
-        <span className="shrink-0 font-mono text-xs tabular-nums text-muted">{formatTime(time)}</span>
-        <input type="range" min="0" max={duration} step="0.1" value={time} aria-label="Position in the video"
-          onChange={(e) => { stopAt.current = null; if (video.current) video.current.currentTime = Number(e.target.value); }} className="min-w-0 flex-1" />
-        <span className="hidden shrink-0 font-mono text-xs tabular-nums text-faint sm:inline">{formatTime(duration)}</span>
+        <IconButton label="Forward one frame (→)" onClick={() => playback.step(1)}><Svg d="M9 6l6 6-6 6M16 6v12" /></IconButton>
+        <IconButton label="Next sentence" onClick={() => step(1)}><Svg fill d="M16 5h2v14h-2zM4 5v14l11-7z" /></IconButton>
+        <span className="ml-1 shrink-0 font-mono text-xs tabular-nums text-ink" title="Playhead: minutes:seconds.frame">
+          {timecode(time, fps)}<span className="text-faint"> / {timecode(duration, fps)}</span>
+        </span>
+        <input type="range" min="0" max={duration || 1} step={1 / fps} value={time} aria-label="Position on the timeline"
+          onChange={(e) => playback.seek(Number(e.target.value))} className="min-w-0 flex-1 md:invisible" />
         <IconButton label={showSubtitles ? 'Hide subtitles in the preview' : 'Show subtitles in the preview'} active={showSubtitles} onClick={() => setShowSubtitles(!showSubtitles)}>
           <span className="text-[11px] font-bold">CC</span>
         </IconButton>
         <IconButton label="Full screen" onClick={() => (document.fullscreenElement ? document.exitFullscreen() : stage.current?.requestFullscreen?.())}>
-          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+          <Svg d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
         </IconButton>
       </div>
       <div className="flex items-center gap-2 border-t border-line px-3 py-1.5 text-xs">
@@ -323,7 +437,7 @@ export default function Player({ project, sentences, control, onTime, time, subt
             <span className="khmer min-w-0 flex-1 truncate text-ink">{current.khmer_text || '—'}</span>
           </>
         ) : <span className="flex-1 text-faint">No sentence here</span>}
-        <span className="hidden shrink-0 text-faint md:inline" title="The preview plays the Khmer clips live, with the background as it will be exported">Live preview · {background}</span>
+        <span className="hidden shrink-0 text-faint md:inline" title="The preview plays the edit list live, with the background as it will be exported">Live preview · {background}</span>
       </div>
     </div>
   );

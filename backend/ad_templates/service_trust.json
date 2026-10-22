@@ -1,0 +1,94 @@
+{
+ "version": 1,
+ "id": "service_trust",
+ "name": "Trusted service",
+ "km": "សេវាកម្មទុកចិត្ត",
+ "style": "service",
+ "about": "The problem, then the result: wipes between shots, clear boxed points, a booking button.",
+ "fonts": {
+  "title": "Battambang",
+  "body": "Kantumruy Pro"
+ },
+ "palette": "brand",
+ "shots": {
+  "fit": "blur",
+  "motion": [
+   "zoom_in",
+   "pan_left"
+  ],
+  "motion_amount": 0.08,
+  "transition": {
+   "type": "wipe",
+   "duration": 0.4
+  }
+ },
+ "captions": {
+  "default": {
+   "preset": "bold_box",
+   "position": "lower",
+   "anim": "slide_up",
+   "size": 1.0
+  },
+  "hook": {
+   "preset": "headline",
+   "position": "upper",
+   "anim": "pop",
+   "size": 1.2
+  },
+  "problem": {
+   "preset": "outline",
+   "position": "center",
+   "anim": "fade",
+   "size": 1.0
+  },
+  "benefit": {
+   "preset": "highlight",
+   "position": "lower",
+   "anim": "slide_up",
+   "size": 1.0
+  },
+  "price": {
+   "preset": "pill",
+   "position": "lower_right",
+   "anim": "pop",
+   "size": 1.0
+  },
+  "cta": {
+   "preset": "button",
+   "position": "lower",
+   "anim": "pop",
+   "size": 1.0
+  }
+ },
+ "logo": {
+  "corner": "top_right",
+  "size": 0.14,
+  "opacity": 0.9
+ },
+ "sponsored": {
+  "show": false,
+  "corner": "top_left"
+ },
+ "end_screen": {
+  "layout": "card",
+  "background": "gradient",
+  "seconds": 3.0,
+  "anim": "pop",
+  "show": [
+   "logo",
+   "headline",
+   "price",
+   "promo",
+   "cta",
+   "contact"
+  ]
+ },
+ "music": {
+  "mood": "calm",
+  "volume": 0.3,
+  "duck": 0.3
+ },
+ "voice": {
+  "speed": 1.0
+ }
+}

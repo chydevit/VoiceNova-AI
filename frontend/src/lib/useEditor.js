@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api } from '../api.js';
+import { api, uploadMedia } from '../api.js';
 
 const TEXT_DELAY = 700; // save typed text this long after the last key press
 
@@ -35,8 +35,8 @@ export function useEditor(id, initial) {
     return () => clearTimeout(t);
   }, [toast]);
 
-  // Follow an export, or the removal of the original voice, while it runs.
-  const following = project.status === 'exporting' || project.separation?.state === 'running';
+  // Follow an export, the removal of the original voice, or work on many sentences, while it runs.
+  const following = project.status === 'exporting' || project.separation?.state === 'running' || project.batch?.state === 'running';
   useEffect(() => {
     if (!following) return undefined;
     const t = setInterval(() => { api.get(id).then(accept).catch(() => {}); }, 1000);
@@ -131,8 +131,14 @@ export function useEditor(id, initial) {
       () => say(fill === 'original' ? 'Deleted — the original audio plays there.' : 'Deleted — silence there.')),
     applyAll: (fields) => action(() => api.applyAll(id, fields), null, (b) => say(`Applied to ${b.changed} sentences.`)),
     settings: (body) => action(() => api.settings(id, body)),
-    backgroundCuts: (cuts, note) => action(() => api.backgroundCuts(id, cuts), null, () => note && say(note)),
-    videoCuts: (cuts, note) => action(() => api.videoCuts(id, cuts), null, () => note && say(note)),
+    track: (tid, fields) => action(() => api.patchTrack(id, tid, fields)),
+    // Add a file to the project's media; onProgress(0–1) while it uploads.
+    addMedia: (file, onProgress) => action(() => uploadMedia(id, file, onProgress)),
+    removeMedia: (mid) => action(() => api.removeMedia(id, mid)),
+    // Many sentences at once, in the background: {kind: voice | restyle | fit, ids, style?, force?}.
+    batch: (body) => action(() => api.batch(id, body)),
+    // One timeline edit (split, trim, delete, skip …); `note` is shown when it worked.
+    edit: (op, note) => action(() => api.timelineEdit(id, op), null, (b) => { const text = typeof note === 'function' ? note(b) : note; if (text) say(text); }),
     undo: () => action(() => api.undo(id), null, (b) => say(b.label ? `Undid: ${b.label}` : 'Nothing to undo.')),
     redo: () => action(() => api.redo(id), null, (b) => say(b.label ? `Redid: ${b.label}` : 'Nothing to redo.')),
     restore: (n) => action(() => api.restoreVersion(id, n), null, () => say(`Restored the edits of export ${n}. Undo brings your later edits back.`)),
@@ -140,6 +146,8 @@ export function useEditor(id, initial) {
     separate: () => action(() => api.separate(id)),
     retry: () => action(async () => ({ project: await api.retry(id) })),
     dismissError: () => setError(null),
+    // Any other request that answers {project, …}: its project is kept and its error shown.
+    run: (fn) => action(fn),
   }), [action, id, patch, say, setText]);
 
   // The sentences as shown: saved values with unsaved drafts on top.
@@ -149,5 +157,5 @@ export function useEditor(id, initial) {
   );
 
   const saving = inFlight > 0 || Object.keys(drafts).length > 0;
-  return { project, sentences, drafts, busy, error, toast, actions, flush, saving };
+  return { project, sentences, drafts, busy, error, toast, actions, flush, saving, say };
 }

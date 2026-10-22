@@ -189,6 +189,105 @@ export async function renderTitleImage(title, width, height) {
   return { data: canvas.toDataURL('image/png'), y, width, height: strip };
 }
 
+// ---------- text clips: text anywhere on the picture, for a time, with an animation ----------
+
+export const TEXT_ANIMATION = 0.35; // seconds to come in or go out; keep in sync with backend services/merge.py
+export const ANIMATIONS = [['none', 'None'], ['fade', 'Fade'], ['pop', 'Pop'], ['slide', 'Slide']];
+
+// keep in sync with backend timeline.default_text_style()
+export const DEFAULT_TEXT_STYLE = {
+  font: 'Kantumruy Pro', size: 8, color: '#ffffff', bold: true, outline: true, outline_color: '#000000', outline_width: 18,
+  box: false, box_color: '#000000', box_opacity: 0.6, shadow: true,
+};
+
+// A text clip's style in the terms the drawing code uses (its middle at x, y % of the picture).
+const textStyle = (clip) => full({ ...DEFAULT_TEXT_STYLE, ...clip.style, x: clip.x ?? 50, align: clip.align || 'center', width: clip.width ?? 90, position: 'top', margin: 0, bilingual: false });
+
+function textLayout(ctx, clip, width, height) {
+  const style = textStyle(clip);
+  const m = metrics(width, height, style);
+  ctx.font = font(m, false, style);
+  const ls = String(clip.text || '').split('\n').flatMap((part) => wrap(ctx, part.trim(), m.maxWidth)).map((t) => ({ t, small: false }));
+  const top = (height * (clip.y ?? 50)) / 100 - blockHeight(ls, m) / 2;
+  return { style, m, ls, top };
+}
+
+// How far a text clip has come in / gone out at timeline time t: {alpha, scale, dy (px)}.
+// The same curves as the export's FFmpeg expressions (backend services/merge._text).
+export function textMotion(clip, t, height) {
+  const d = Math.min(TEXT_ANIMATION, (clip.end - clip.start) / 2);
+  const come = clip.animation?.in || 'none';
+  const go = clip.animation?.out || 'none';
+  const p = Math.min(1, Math.max(0, (t - clip.start) / d));
+  const q = Math.min(1, Math.max(0, (t - (clip.end - d)) / d));
+  let alpha = 1;
+  let scale = 1;
+  let dy = 0;
+  if (come === 'fade' || come === 'slide') alpha *= p;
+  if (come === 'pop') { alpha *= Math.min(1, p * 2); scale *= 0.5 + 0.5 * (1 + 2.70158 * (p - 1) ** 3 + 1.70158 * (p - 1) ** 2); }
+  if (come === 'slide') dy += height * 0.06 * (1 - p) ** 2;
+  if (go !== 'none') alpha *= 1 - q;
+  if (go === 'pop') scale *= 1 - 0.4 * q * q;
+  if (go === 'slide') dy -= height * 0.05 * q * q;
+  return { alpha, scale, dy };
+}
+
+// Draw a text clip onto a full-picture canvas (not cleared first), as it looks at time t
+// (t null: fully in). Returns its box in picture pixels, without the animation.
+export function drawTextClip(ctx, clip, width, height, t = null) {
+  if (!String(clip.text || '').trim()) return null;
+  const { style, m, ls, top } = textLayout(ctx, clip, width, height);
+  if (t === null) return drawBlock(ctx, ls, m, style, width, top);
+  const { alpha, scale, dy } = textMotion(clip, t, height);
+  if (alpha <= 0.001) return measureBlock(ctx, ls, m, style, width, top);
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  const box = measureBlock(ctx, ls, m, style, width, top);
+  const cx = box.left + box.width / 2;
+  const cy = box.top + box.height / 2;
+  ctx.translate(cx, cy + dy);
+  ctx.scale(scale, scale);
+  ctx.translate(-cx, -cy);
+  drawBlock(ctx, ls, m, style, width, top);
+  ctx.restore();
+  return box;
+}
+
+// Where a text clip sits on the picture (picture pixels), fully in.
+export function measureTextClip(clip, width, height) {
+  if (!String(clip.text || '').trim()) return null;
+  const scratch = document.createElement('canvas').getContext('2d');
+  const { style, m, ls, top } = textLayout(scratch, clip, width, height);
+  return drawBlock(scratch, ls, m, style, width, top);
+}
+
+// Where a block would go, without drawing it.
+function measureBlock(ctx, ls, m, style, width, top) {
+  const scratch = document.createElement('canvas').getContext('2d');
+  return drawBlock(scratch, ls, m, style, width, top);
+}
+
+// A text clip as one PNG of just the text (for burning in), and where it goes: {data, x, y, width, height}.
+export async function renderTextImage(clip, width, height) {
+  await loadSubtitleFont(textStyle(clip));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  const box = drawTextClip(ctx, clip, width, height);
+  if (!box) return null;
+  const pad = Math.ceil(metrics(width, height, textStyle(clip)).size * 0.35); // room for the outline and shadow
+  const x = Math.max(0, Math.floor(box.left - pad));
+  const y = Math.max(0, Math.floor(box.top - pad));
+  const w = Math.min(width, Math.ceil(box.left + box.width + pad)) - x;
+  const h = Math.min(height, Math.ceil(box.top + box.height + pad)) - y;
+  const out = document.createElement('canvas');
+  out.width = w;
+  out.height = h;
+  out.getContext('2d').drawImage(canvas, x, y, w, h, 0, 0, w, h);
+  return { data: out.toDataURL('image/png'), x, y, width: w, height: h };
+}
+
 // Khmer is written without spaces between words, so break at word boundaries
 // found by Intl.Segmenter (falls back to spaces in old browsers).
 function wrap(ctx, text, maxWidth) {

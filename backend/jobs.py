@@ -9,6 +9,18 @@ from errors import AppError
 
 log = logging.getLogger("jobs")
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="job")
+_media = ThreadPoolExecutor(max_workers=1, thread_name_prefix="media")  # preview copies: never wait for a job
+
+
+def start_media(fn, *args) -> None:
+    """Make a derived file (a preview copy) in the background, beside the jobs."""
+    def run():
+        try:
+            fn(*args)
+        except Exception:  # noqa: BLE001 - the preview falls back to the original file
+            log.exception("media task %s%s failed", getattr(fn, "__name__", fn), args)
+
+    _media.submit(run)
 
 
 class Progress:
@@ -59,10 +71,10 @@ def start(pid: str, phase: str, fn, busy_status: str, done_status: str) -> None:
     _executor.submit(run)
 
 
-def start_task(pid: str, key: str, fn) -> None:
+def start_task(pid: str, key: str, fn, **about) -> None:
     """Queue a side task that does not lock editing (e.g. removing the original voice).
-    Its state lives in project[key]: {state: running | done | error, progress, message, error}."""
-    store.update(pid, **{key: {"state": "running", "progress": 0.0, "message": "Waiting to start…", "error": None}})
+    Its state lives in project[key]: {state: running | done | error, progress, message, error, **about}."""
+    store.update(pid, **{key: {"state": "running", "progress": 0.0, "message": "Waiting to start…", "error": None, **about}})
 
     def report(fraction: float | None = None, message: str | None = None) -> None:
         def apply(p: dict) -> None:

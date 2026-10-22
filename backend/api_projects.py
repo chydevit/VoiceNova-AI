@@ -15,6 +15,8 @@ import jobs
 import pipeline
 import sentences
 import store
+import timeline
+import watermarks
 import views
 from errors import AppError
 from services import media, separate, tts
@@ -34,12 +36,13 @@ def list_projects():
 
 
 @router.post("")
-async def upload(file: UploadFile = File(...), source_lang: str = Form("auto")):
+async def upload(file: UploadFile = File(...), source_lang: str = Form("auto"), watermark_preset: str = Form("")):
     media.require_ffmpeg()
     name = Path(file.filename or "video").name
     ext = Path(name).suffix.lower()
     if ext not in config.ALLOWED_EXTENSIONS:
         raise AppError(f"“{ext or name}” files aren't supported.", hint="Upload an MP4, MOV, MKV or WebM video.")
+    preset = watermarks.preset_for_new_project(watermark_preset.strip() or None)  # (checked before anything is kept)
     project = store.create(name)
     pid = project["id"]
     target = store.project_dir(pid) / f"source{ext}"
@@ -58,14 +61,26 @@ async def upload(file: UploadFile = File(...), source_lang: str = Form("auto")):
     except Exception:
         store.delete(pid)
         raise
-    store.update(pid, video={"file": target.name, **info}, source_lang=(source_lang or "auto").strip() or "auto")
+    def setup(p: dict) -> None:
+        p.update(video={"file": target.name, **info}, source_lang=(source_lang or "auto").strip() or "auto")
+        timeline.init(p, p["video"], name)  # the edit list starts as the whole upload
+        if preset:  # the watermark preset chosen for it, or the default one for new projects
+            try:
+                watermarks.apply_preset(p, store.project_dir(pid), preset)
+            except AppError:
+                pass  # (a logo deleted from the Brand Kit since: the video still comes in)
+
+    project = store.mutate(pid, setup)
     jobs.start(pid, "prepare", pipeline.prepare, busy_status="processing", done_status="review")
+    pipeline.ensure_proxies(pid, project)
     return reply(store.load(pid))
 
 
 @router.get("/{pid}")
 def get_project(pid: str):
-    return reply(store.load(pid))
+    project = store.load(pid)
+    pipeline.ensure_proxies(pid, project)  # projects made before preview copies existed get theirs now
+    return reply(project)
 
 
 @router.delete("/{pid}")
@@ -92,6 +107,27 @@ class TitleImage(BaseModel):
     y: int = Field(ge=0)
     width: int = Field(gt=0)
     height: int = Field(gt=0)
+
+
+class TextImage(BaseModel):
+    """One text clip drawn by the browser: a PNG of just the text, with its place on the canvas."""
+    data: str = Field(pattern=r"^data:image/png;base64,", max_length=20_000_000)
+    x: float
+    y: float
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+
+
+class Point(BaseModel):
+    x: float
+    y: float
+
+
+class WatermarkImage(TextImage):
+    """One watermark drawn by the browser at the exported size (its look, opacity and rotation in it),
+    where it goes, and for a corner switch where it goes at each corner (top-left, top-right,
+    bottom-right, bottom-left)."""
+    corners: list[Point] | None = Field(None, min_length=4, max_length=4)
 
 
 class TextEdit(BaseModel):
@@ -121,15 +157,17 @@ def generate(pid: str, body: GenerateBody):
     def start(p: dict) -> None:
         if p["status"] in store.BUSY:
             raise AppError("Please wait — this video is still being processed.", status=409)
-        if not p["sentences"]:
+        items = sentences.items(p)
+        if not items:
             raise AppError("There are no sentences yet.", hint="Press “Try again” to transcribe the video.", status=409)
         for edit in body.sentences or []:
-            if any(s["id"] == edit.id for s in p["sentences"]):
+            if any(s["id"] == edit.id for s in items):
                 sentences.patch(p, edit.id, {"khmer_text": edit.khmer_text}, provider.genders)
-        if not any(s["khmer_text"] for s in p["sentences"]):
+        if not any(s["khmer_text"] for s in items):
             raise AppError("All the Khmer lines are empty.", hint="Type the Khmer translation, then generate.")
         p["settings"] = store.default_settings(voice, round(body.speed, 2), body.background)
-        for s in p["sentences"]:
+        timeline.track(p, "background")["volume"] = store.default_background_volume(body.background)
+        for s in items:
             sentences.patch(p, s["id"], {"voice": voice, "speed": body.speed}, provider.genders)
 
     store.edit(pid, start, "Generate voice")
@@ -148,6 +186,9 @@ class ExportBody(BaseModel):
     subtitle_images: dict[str, str] | None = None
     subtitle_layout: SubtitleLayout | None = None
     title_image: TitleImage | None = None  # the title at the top, burned into both videos
+    text_images: dict[str, TextImage] | None = None  # text clip id -> its picture, for both videos
+    watermark_images: dict[str, WatermarkImage] | None = None  # watermark id -> its picture, for both videos
+    watermark: bool = True  # false: export without the watermarks
 
 
 @router.post("/{pid}/export")
@@ -155,14 +196,15 @@ def export(pid: str, body: ExportBody):
     project = store.load(pid)
     if project["status"] in store.BUSY:
         raise AppError("Please wait — this video is still being processed.", status=409)
-    if not any(s["khmer_text"] for s in project["sentences"]):
+    if not any(s["khmer_text"] for s in sentences.items(project)):
         raise AppError("All the Khmer lines are empty.", hint="Type the Khmer text of at least one sentence.")
     if "mp4_subs" in body.formats and not body.subtitle_images:
         raise AppError("The subtitle images are missing.", hint="Reload the page and try again.")
     if project["settings"]["background"] == "separate" and not separate.available() and {"mp4", "mp4_subs"} & set(body.formats):
         raise AppError("“Remove the original voice” needs Demucs, which isn't installed.", hint="Pick another background in Project settings.")
-    store.update(pid, export_prefs={"formats": body.formats, "audio_format": body.audio_format})
-    pipeline.write_request(pid, body.formats, body.audio_format, body.subtitle_images, body.subtitle_layout, body.title_image)
+    store.update(pid, export_prefs={"formats": body.formats, "audio_format": body.audio_format, "watermark": body.watermark})
+    pipeline.write_request(pid, body.formats, body.audio_format, body.subtitle_images, body.subtitle_layout, body.title_image, body.text_images,
+                           body.watermark_images if body.watermark else None, body.watermark)
     jobs.start(pid, "export", pipeline.export, busy_status="exporting", done_status="done")
     return reply(store.load(pid))
 
@@ -172,7 +214,7 @@ def retry(pid: str):
     project = store.load(pid)
     if project["status"] != "error":
         return reply(project)
-    if project["phase"] == "prepare" or not project["sentences"]:
+    if project["phase"] == "prepare" or not sentences.items(project):
         jobs.start(pid, "prepare", pipeline.prepare, busy_status="processing", done_status="review")
     elif project["phase"] == "export":  # back to the editor; the user exports again
         store.update(pid, status="done", error=None)
@@ -204,6 +246,111 @@ def version_file(pid: str, n: int, kind: str, download: int = 0):
 def source_video(pid: str):
     project = store.load(pid)
     return FileResponse(store.project_dir(pid) / project["video"]["file"], content_disposition_type="inline")
+
+
+# ---------- files added in the editor (videos, pictures, music, sound effects) ----------
+
+@router.post("/{pid}/media")
+async def add_media(pid: str, file: UploadFile = File(...)):
+    """Add a file to the project's media (not an undo step: the file stays until it's removed)."""
+    name = Path(file.filename or "file").name
+    kind = media.media_kind(name)
+    if not kind:
+        raise AppError(f"“{Path(name).suffix or name}” files can't be added.",
+                       hint="Add a video (MP4, MOV, MKV, WebM), a picture (PNG, JPG, WebP) or sound (MP3, WAV, M4A, OGG, FLAC).")
+    project = store.load(pid)
+    if project["status"] in store.BUSY:
+        raise AppError("Please wait — this video is still being processed.", status=409)
+    folder = store.project_dir(pid)
+    (folder / "media").mkdir(exist_ok=True)
+
+    def register(p: dict) -> str:
+        mid = timeline.new_id(p, "m")
+        p.setdefault("media", {})[mid] = {"kind": kind, "name": name, "file": ""}
+        return mid
+
+    holder: list[str] = []
+    store.mutate(pid, lambda p: holder.append(register(p)))
+    mid = holder[0]
+    target = folder / "media" / f"{mid}{Path(name).suffix.lower()}"
+    limit, written = config.MAX_UPLOAD_MB * 1024 * 1024, 0
+    try:
+        with target.open("wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                written += len(chunk)
+                if written > limit:
+                    raise AppError(f"This file is larger than {config.MAX_UPLOAD_MB} MB.", hint="Use a smaller file.", status=413)
+                f.write(chunk)
+        if not written:
+            raise AppError("The file is empty.", hint="Choose it again.")
+        info = media.probe_media(target, kind)
+        extra = {}
+        if kind == "video":
+            extra["poster"] = str(media.poster(target, info["duration"], folder / "media" / f"{mid}.poster.jpg").relative_to(folder))
+        if kind in ("video", "audio") and info.get("audio"):
+            wave = folder / "media" / f"{mid}.wave.json"
+            wave.write_text(json.dumps(media.waveform(target)), "utf-8")
+            extra["wave"] = str(wave.relative_to(folder))
+    except Exception:
+        target.unlink(missing_ok=True)
+        store.mutate(pid, lambda p: p["media"].pop(mid, None))
+        raise
+    project = store.mutate(pid, lambda p: p["media"][mid].update(file=str(target.relative_to(folder)), proxy=None, **info, **extra))
+    pipeline.ensure_proxies(pid, project)
+    return reply(project, id=mid)
+
+
+@router.delete("/{pid}/media/{mid}")
+def remove_media(pid: str, mid: str):
+    """Take a file out of the media list. Its file is kept, so undo and earlier versions still work."""
+    def apply(p: dict) -> None:
+        m = (p.get("media") or {}).get(mid)
+        if not m or mid == "source":
+            raise AppError("That file can't be removed.", status=404)
+        if any(c.get("media") == mid for _, c in timeline.all_clips(p)):
+            raise AppError("This file is on the timeline.", hint="Delete its clips first, then remove it.", status=409)
+        m["removed"] = True
+
+    return reply(store.mutate(pid, apply))
+
+
+@router.get("/{pid}/media/{mid}/poster.jpg")
+def media_poster(pid: str, mid: str):
+    return _media_extra(pid, mid, "poster", "image/jpeg")
+
+
+@router.get("/{pid}/media/{mid}/waveform.json")
+def media_waveform(pid: str, mid: str):
+    return _media_extra(pid, mid, "wave", "application/json")
+
+
+def _media_extra(pid: str, mid: str, key: str, media_type: str):
+    rel = (store.load(pid).get("media", {}).get(mid) or {}).get(key)
+    path = store.project_dir(pid) / rel if rel else None
+    if not path or not path.exists():
+        raise AppError("Not available.", status=404)
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+@router.get("/{pid}/media/{mid}/proxy.mp4")
+def proxy_file(pid: str, mid: str):
+    m = store.load(pid).get("media", {}).get(mid)
+    path = store.project_dir(pid) / m["proxy"] if m and m.get("proxy") else None
+    if not path or not path.exists():
+        raise AppError("The preview copy isn't ready yet.", status=404)
+    # Its URL carries the file's time, so a new copy gets a new URL.
+    return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+@router.get("/{pid}/media/{mid}/file")
+def media_file(pid: str, mid: str):
+    m = store.load(pid).get("media", {}).get(mid)
+    if not m:
+        raise AppError("That file isn't in this project.", status=404)
+    path = store.project_dir(pid) / m["file"]
+    if not path.exists():
+        raise AppError("That file is missing.", status=404)
+    return FileResponse(path, content_disposition_type="inline")
 
 
 @router.get("/{pid}/clips/{name}")
@@ -294,6 +441,11 @@ def restore_version(pid: str, n: int) -> dict:
     state = history.load_version(folder, n)
     if state is None:
         raise AppError("This version can't be restored.", hint="Only exports made in the editor keep their edits.", status=404)
+    if "timeline" not in state:  # exported before the edit list (schema 2)
+        state = timeline.migrate_state(state, store.load(pid)["video"])
+    elif timeline.is_v3(state):  # exported while volumes were fractions (schema 3)
+        state = timeline.upgrade_v4(state)
+    timeline.ensure_tracks(state)  # exported before the watermark track (schema 4)
 
     def apply(p: dict) -> None:
         if p["status"] in store.BUSY:

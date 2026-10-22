@@ -1,10 +1,10 @@
 // Every API error comes back as {error: {message, hint?, detail?}}.
-function toError(body, status) {
+export function toError(body, status) {
   const e = body?.error || { message: `Request failed (HTTP ${status}).` };
   return Object.assign(new Error(e.message), { hint: e.hint, detail: e.detail, status });
 }
 
-async function request(path, { method = 'GET', json } = {}) {
+export async function request(path, { method = 'GET', json } = {}) {
   let res;
   try {
     res = await fetch(path, {
@@ -44,10 +44,13 @@ export const api = {
   deleteSentence: (id, sid, fill) => request(`${sentence(id, sid)}?fill=${fill}`, { method: 'DELETE' }),
   fix: (id, sid) => request(`${sentence(id, sid)}/fix`, { method: 'POST' }),
   checkVoices: (id) => request(`${project(id)}/sentences/check-voices`, { method: 'POST' }),
-  suggest: (id, sid) => request(`${sentence(id, sid)}/suggest`, { method: 'POST' }),
+  suggest: (id, sid, instruction = '') => request(`${sentence(id, sid)}/suggest`, { method: 'POST', json: { instruction } }),
+  translateMissing: (id) => request(`${project(id)}/translate-missing`, { method: 'POST' }).then((b) => b.project),
   settings: (id, body) => request(`${project(id)}/settings`, { method: 'PATCH', json: body }),
-  backgroundCuts: (id, cuts) => request(`${project(id)}/background/cuts`, { method: 'PUT', json: { cuts } }),
-  videoCuts: (id, cuts) => request(`${project(id)}/video/cuts`, { method: 'PUT', json: { cuts } }),
+  patchTrack: (id, tid, fields) => request(`${project(id)}/timeline/tracks/${tid}`, { method: 'PATCH', json: fields }),
+  timelineEdit: (id, edit) => request(`${project(id)}/timeline/edit`, { method: 'POST', json: { edit } }),
+  removeMedia: (id, mid) => request(`${project(id)}/media/${mid}`, { method: 'DELETE' }),
+  batch: (id, body) => request(`${project(id)}/sentences/batch`, { method: 'POST', json: body }),
   undo: (id) => request(`${project(id)}/undo`, { method: 'POST' }),
   redo: (id) => request(`${project(id)}/redo`, { method: 'POST' }),
   exportVideo: (id, body) => request(`${project(id)}/export`, { method: 'POST', json: body }),
@@ -59,18 +62,25 @@ export const api = {
 };
 
 // Uploads use XHR because fetch can't report upload progress.
-export function uploadVideo(file, sourceLang, onProgress) {
+// watermarkPreset: '' the default watermark (when it's on for new projects), 'none', or a preset id.
+export function uploadVideo(file, sourceLang, onProgress, watermarkPreset = '') {
+  return upload('/api/projects', { file, source_lang: sourceLang, watermark_preset: watermarkPreset }, onProgress).then((body) => body.project);
+}
+
+// A video, picture or sound file added in the editor: resolves to {project, id}.
+export const uploadMedia = (id, file, onProgress) => upload(`${project(id)}/media`, { file }, onProgress);
+
+function upload(path, fields, onProgress) {
   return new Promise((resolve, reject) => {
     const form = new FormData();
-    form.append('file', file);
-    form.append('source_lang', sourceLang);
+    for (const [k, v] of Object.entries(fields)) form.append(k, v);
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/projects');
+    xhr.open('POST', path);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
     xhr.onload = () => {
       let body = null;
       try { body = JSON.parse(xhr.responseText); } catch { /* not JSON */ }
-      if (xhr.status >= 200 && xhr.status < 300) resolve(body.project);
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body);
       else reject(toError(body, xhr.status));
     };
     xhr.onerror = () => reject(Object.assign(new Error('The upload was interrupted.'), { hint: 'Check that the server is running, then try again.' }));
